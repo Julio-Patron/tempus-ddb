@@ -36,7 +36,7 @@ dev = [
     "pytest",
     "pytest-asyncio",
     "maturin",
-    "ruff==0.16.9",
+    "ruff==0.16.10",
     "bandit",
     "pip-audit"
 ]
