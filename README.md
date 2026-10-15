@@ -26,7 +26,7 @@
 pip install tempus-ddb
 ```
 
-### 🚀 [Try the Live Interactive Trace Demo →](https://elbuilder77.github.io/tempus-ddb/trace.html)
+### 🚀 [Try the Live Interactive Trace Demo →](julio-patron.github.io/tempus-ddb/)
 *Verify real cryptographic hashes, Ed25519 signatures, and tamper detection directly in your browser.*
 
 ---
