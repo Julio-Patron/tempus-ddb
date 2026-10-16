@@ -1606,7 +1606,7 @@ dev = [
 requires-dist = [
     { name = "bandit", marker = "extra == 'dev'" },
     { name = "maturin", marker = "extra == 'dev'" },
-    { name = "mcp", specifier = ">=1.0.0,<2.0.0" },
+    { name = "mcp", specifier = ">=1.0.0,<3.0.0" },
     { name = "pip-audit", marker = "extra == 'dev'" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
