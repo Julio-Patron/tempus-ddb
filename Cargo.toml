@@ -10,6 +10,7 @@ readme = "README.md"
 keywords = ["ai", "agents", "ledger", "audit", "mcp"]
 categories = ["command-line-utilities", "database"]
 edition = "2021"
+rust-version = "1.88"
 
 [lib]
 name = "_tempus_ddb"
