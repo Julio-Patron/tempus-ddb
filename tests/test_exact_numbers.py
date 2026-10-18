@@ -466,3 +466,62 @@ def test_gate_keeps_the_last_value_of_a_repeated_key_as_documented():
         permit = json.loads(db.request_action(raw, str(agent_keys), 30))
         assert permit["intent"]["resource"] == "vendor/b"
         assert permit["intent"]["money"]["amount"] == "25.00"
+
+
+# ----------- D1: conversion code that raises inside the adapter's own objects
+
+
+class _BadFloat(float):
+    def __repr__(self):
+        raise RuntimeError("boom repr")
+
+
+class _BadDecimal(__import__("decimal").Decimal):
+    def __str__(self):
+        raise RuntimeError("boom str")
+
+
+class _BadDatetime(__import__("datetime").datetime):
+    def isoformat(self, *args, **kwargs):
+        raise RuntimeError("boom isoformat")
+
+
+class _BadDict(dict):
+    def items(self):
+        raise RuntimeError("boom items")
+
+
+class _BadList(list):
+    def __iter__(self):
+        raise RuntimeError("boom iter")
+
+
+class _BadKey:
+    def __str__(self):
+        raise RuntimeError("boom key")
+
+    __hash__ = object.__hash__
+
+
+def _bad_payloads():
+
+    return {
+        "float-repr": {"v": _BadFloat(1.5)},
+        "decimal-str": {"v": _BadDecimal("1.5")},
+        "datetime-isoformat": {"v": _BadDatetime(2026, 1, 1)},
+        "dict-items": _BadDict(a=1),
+        "list-iter": {"v": _BadList([1])},
+        "key-str": {_BadKey(): 1},
+        "nested": {"ok": [1, {"v": _BadFloat(2.5)}]},
+    }
+
+
+@pytest.mark.parametrize("name", list(_bad_payloads()))
+def test_conversion_that_raises_is_degraded_not_recorded_as_failed(name):
+    receipt = _run_adapter(_bad_payloads()[name], f"d1-{name}")
+    assert receipt["status"] == "SUCCEEDED", receipt
+    assert receipt["output"]["_tempus_output_degraded"] is True
+    assert (
+        "RuntimeError" in receipt["output"]["reason"]
+        or "not representable" in (receipt["output"]["reason"])
+    )

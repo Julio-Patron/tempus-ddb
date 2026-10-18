@@ -819,7 +819,9 @@ for earlier versions can hit `NON_EXACT_NUMBER` (the message names the path, for
 
 Custom executors do not need to convert their results: the packaged runtime records floats,
 huge integers, `Decimal` and `datetime` as strings, and a result it cannot represent in a
-degraded form, never as `FAILED` for an action that happened. Bundles signed by older
+degraded form (with the adapter's own status) instead of recording `FAILED`. An exception
+the adapter itself raises is still recorded as `FAILED` (or `UNKNOWN` for ambiguous
+transport errors): the runtime cannot know whether the effect happened. Bundles signed by older
 versions that contain a float verify as `INVALID` (`AUTHORIZATION_NON_EXACT_NUMBER` /
 `EXECUTION_NON_EXACT_NUMBER`) even if untouched.
 

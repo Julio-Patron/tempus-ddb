@@ -128,9 +128,13 @@ policy on the permit's intent before consuming it, and read the same intent text
     with the adapter's own status and the marker
     `{"_tempus_output_degraded": true, "reason": ..., "repr": <bounded>}`. Before, such a
     result made the runtime record `FAILED` (`EXECUTION_EXCEPTION`) although the external
-    action had happened. Criterion: an adapter result is evidence about an effect that
-    already occurred; degrading its representation is acceptable, recording a failure for a
-    success is not.
+    action had happened. Criterion: a result the adapter *returns* is evidence about an
+    effect that already occurred; degrading its representation is acceptable, recording a
+    failure for a success is not. This includes conversion code that raises inside the
+    adapter's own objects (`__repr__`, `__str__`, `isoformat`, `items`, `__iter__` of
+    subclasses of `float`, `Decimal`, `datetime`, `dict`, `list`). An exception *raised by
+    the adapter* is not covered: the runtime cannot know whether the effect happened, so it
+    records `FAILED` (`EXECUTION_EXCEPTION`), or `UNKNOWN` for ambiguous transport errors.
 - **VERIFIED now says what was decided and executed.** Results of `verify-receipt`,
   `verify-trace` and `verify-bundle` carry `decision` (`ALLOWED`/`BLOCKED`) and
   `execution_status` (`SUCCEEDED`/`FAILED`, `null` when there is no outcome); both are

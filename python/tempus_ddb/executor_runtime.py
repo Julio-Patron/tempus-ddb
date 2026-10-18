@@ -77,14 +77,17 @@ def exact_json(value: Any, _depth: int = 0) -> Any:
 def sanitize_output(payload: Any) -> str:
     """JSON text of an adapter result that can always be signed.
 
-    Criterion: an adapter result is evidence about an effect that already happened, so a
-    result that cannot be represented must never turn that effect into a recorded FAILED.
-    If the payload cannot be converted (too deep, cyclic, ...), the outcome keeps the
-    adapter's own status and carries a marker with a bounded `repr` instead.
+    Criterion: a result the adapter *returned* is evidence about an effect that already
+    happened, so a result that cannot be converted (too deep, cyclic, code in the adapter's
+    own objects raising in `__repr__` / `__str__` / `isoformat` / `items`, ...) never turns
+    into a recorded FAILED: the outcome keeps the adapter's own status and carries a marker
+    with a bounded `repr` instead. An exception *raised by the adapter* is a different
+    case: the runtime cannot know whether the effect happened, so it records FAILED (or
+    UNKNOWN for ambiguous transport errors).
     """
     try:
         return json.dumps(exact_json(payload))
-    except (_Unrepresentable, RecursionError, ValueError, TypeError) as exc:
+    except Exception as exc:  # incl. code inside the adapter's own objects (__repr__...)
         reason = str(exc) if isinstance(exc, _Unrepresentable) else type(exc).__name__
         return json.dumps(
             {
