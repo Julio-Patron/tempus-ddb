@@ -16,6 +16,21 @@
   not exposed over MCP. `tempus doctor` fails `active_policy` while only it is active.
 - Migration: install a real policy, or opt in with `--allow-all-dev` for development.
 
+### Added: independent verification
+- **Pinned gate key.** `tempus verify-trace --gate-public-key HEX|FILE [--executor-public-key ...]
+  [--strict]` verifies a trace against a gate public key supplied by the verifier. A database
+  signed by anyone else (a fully forged DB with the attacker's own gate, agent and executor
+  keys) is `INVALID` (`GATE_KEY_NOT_PINNED`); before, it verified against its own root of trust.
+- **`tempus verify-receipt`** verifies a standalone trace, permit or outcome JSON with no
+  database. **`tempus checkpoint verify --gate-public-key`** needs only the public key (no
+  keyfile, no database). Python: `verify_receipt`, `verify_checkpoint`,
+  `TempusDDB.verify_trace(id, gate_public_key=None, executor_public_keys=None)`; Rust:
+  `verify_receipt`, `verify_checkpoint`, `SqliteStorage::verify_trace_pinned`,
+  `tempus-ddb-core verify-receipt`.
+- Verification results now carry a `kind` and a `trust` object (`PINNED_GATE_KEY`, independent,
+  with `not_checked`; or `DATABASE_SELF_ATTESTED`, `"independent": false`). Without a pinned
+  key the CLI prints a "NOT INDEPENDENT" warning; `--strict` refuses to run unpinned.
+
 ## [0.5.3] - 2026-09-26
 
 First published build of the 0.5.2 security line. The `v0.5.2` release workflow

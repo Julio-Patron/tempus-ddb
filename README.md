@@ -264,8 +264,10 @@ tempus checkpoint create --tenant-id acme --out checkpoint-acme.json
 # 2. Export the incremental event stream
 tempus checkpoint export --tenant-id acme --from-seq 1 --out stream-acme.json
 
-# 3. Cryptographically verify stream integrity and rollback absence offline
-tempus checkpoint verify --checkpoint checkpoint-acme.json --stream stream-acme.json
+# 3. Cryptographically verify stream integrity and rollback absence offline.
+#    Pin the gate public key: without it the check is NOT independent.
+tempus checkpoint verify --checkpoint checkpoint-acme.json --stream stream-acme.json \
+    --gate-public-key <gate-public-key-hex|file>
 ```
 
 See [docs/BACKUP_AND_DISASTER_RECOVERY.md](docs/BACKUP_AND_DISASTER_RECOVERY.md) for complete disaster recovery, hot backup, and reconciliation procedures.
@@ -564,7 +566,7 @@ Humans are readers, not approvers:
 
 ```bash
 tempus trace --action-id <action-id>
-tempus verify-trace --action-id <action-id>
+tempus verify-trace --action-id <action-id> --gate-public-key <hex|file>
 tempus list-agents
 tempus list-policies
 tempus identity-events
@@ -574,6 +576,40 @@ The public [trace demo](https://elbuilder77.github.io/tempus-ddb/trace.html) is 
 synthetic, browser-only illustration of hashes, signatures and record binding. A future
 read-only audit console must derive its views from these contracts; it is not in the
 current source line.
+
+## Independent verification (pinned gate key)
+
+`verify-trace` without a key checks the database against **its own** root of trust, so a
+completely forged database (attacker keys, fake payment) verifies against itself. The
+output says so (`"trust": {"independent": false}` plus a warning). To verify
+independently, pin the gate's public key, obtained out of band (the operator publishes
+the output of `tempus whoami`), instead of trusting the database:
+
+```bash
+# Operator: publish the gate PUBLIC key (never the key file) and hand out receipts
+tempus whoami                                   # prints the gate "Public Key"
+tempus trace --action-id <action-id> > receipt.json
+
+# Verifier: no database, no gate private key; the key is pinned by you
+tempus verify-receipt --receipt receipt.json --gate-public-key <64-hex|file>
+tempus verify-receipt --receipt receipt.json --gate-public-key <hex> \
+    --executor-public-key <executor-hex>        # optionally pin the executor too
+tempus verify-trace --action-id <id> --gate-public-key <hex> --strict
+tempus checkpoint verify --checkpoint chk.json --stream stream.json --gate-public-key <hex>
+```
+
+`verify-receipt` takes a trace (`tempus.action-trace.v1`), a permit
+(`tempus.authorization-result.v1`) or an outcome (`tempus.execution-result.v1`); `-` reads
+stdin. Exit code `0` is VERIFIED, `2` is INVALID (tampered receipt, wrong key, or a
+database signed by someone else) and `1` is a usage or I/O error. `--strict` refuses to run
+without `--gate-public-key`. Python: `verify_receipt(json, gate_pub, executor_pubs=None)`,
+`verify_checkpoint(chk, stream, gate_pub)` and `TempusDDB.verify_trace(id, gate_pub)`.
+
+What a pinned verification does **not** show (also listed in its `trust.not_checked`):
+that the agent was registered at issue time or that the permit was consumed only once
+(the pinned gate signature attests both), that the receipts you were given are *all* of
+them (omitted or rolled-back records are not detectable from a single document), and it
+assumes the gate private key was not compromised.
 
 ## Legacy ledger
 
