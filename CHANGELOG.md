@@ -25,6 +25,13 @@
   `--gate-public-key` / `--executor-public-key` now exits 1 on every verifier; only
   omitting the option means "not pinned". In Python an empty string already raised;
   `verify_trace(id, None)` remains the documented unpinned mode.
+- **Key files are parsed strictly.** A `--gate-public-key` / `--executor-public-key` FILE
+  holding JSON used the last of any repeated key and fell through from an empty `public_key`
+  to `gate_public_key` (`{"public_key":"","gate_public_key":ATTACKER}` pinned the attacker's
+  key). A repeated key, a candidate field (`public_key`, `gate_public_key`) that is empty or
+  not a string, a non-object document, or two candidate fields with different keys is now a
+  usage error (exit 1). Files with one key, or both fields holding the same key, work as
+  before, including a gate `keys.json` (only its public part is read).
 - **Signed documents hold only exact numbers.** `serde_json` reads every float, and every
   integer outside i64/u64, as an f64. The gate rounded such numbers before signing (an
   outcome `output` of `123456789012345678901234567890` was signed as `1.2345678901234568e29`)

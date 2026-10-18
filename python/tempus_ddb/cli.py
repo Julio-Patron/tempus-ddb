@@ -476,6 +476,49 @@ NOT_INDEPENDENT_WARNING = (
 )
 
 
+KEY_FILE_FIELDS = ("public_key", "gate_public_key")
+
+
+def _reject_duplicate_keys(pairs):
+    seen = {}
+    for key, item in pairs:
+        if key in seen:
+            raise ValueError(f"the key {key!r} appears more than once")
+        seen[key] = item
+    return seen
+
+
+def _key_from_json_file(text, path, label):
+    """The one public key a JSON key file names, or ValueError if it is not unambiguous.
+
+    A key file is the verifier's trust root, so nothing is guessed: repeated keys, a
+    candidate field that is empty or not a string, or two candidate fields holding different
+    keys are all errors (the previous code let the last duplicate win and fell through from an
+    empty `public_key` to `gate_public_key`).
+    """
+    try:
+        data = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+    except ValueError as exc:  # includes JSONDecodeError and the duplicate-key error
+        raise ValueError(f"{label}: {path} is not a valid key file: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{label}: {path} must hold a JSON object")
+    candidates = {}
+    for field in KEY_FILE_FIELDS:
+        if field not in data:
+            continue
+        value = data[field]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{label}: {field} in {path} must be a non-empty string")
+        candidates[field] = value.strip().lower()
+    if not candidates:
+        raise ValueError(f"{label}: no public_key field in {path}")
+    if len(set(candidates.values())) > 1:
+        raise ValueError(
+            f"{label}: {path} is ambiguous: public_key and gate_public_key differ"
+        )
+    return next(iter(candidates.values()))
+
+
 def _load_public_key(value, label="--gate-public-key"):
     """Resolve a public key given as 64 hex chars or as a file path.
 
@@ -492,15 +535,8 @@ def _load_public_key(value, label="--gate-public-key"):
     if os.path.isfile(value):
         with open(value, encoding="utf-8") as handle:
             raw = handle.read().strip()
-        if raw.startswith("{"):
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{label}: {value} is not valid JSON: {exc}") from exc
-            raw = str(data.get("public_key") or data.get("gate_public_key") or "")
-            raw = raw.strip()
-            if not raw:
-                raise ValueError(f"{label}: no public_key field in {value}")
+        if raw.startswith(("{", "[")):
+            raw = _key_from_json_file(raw, value, label)
     key = raw.lower()
     if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
         raise ValueError(

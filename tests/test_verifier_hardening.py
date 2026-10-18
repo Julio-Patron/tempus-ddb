@@ -500,3 +500,112 @@ def test_help_still_exits_0_and_invalid_still_exits_2(world):
     assert run_cli(["--help"], cwd=world["root"])[0] == 0
     code, out, _ = _verify_bundle(world, json.dumps(world["bundle"]), key="00" * 32)
     assert code == 2 and json.loads(out)["status"] == "INVALID"
+
+
+# ---------------------------------------- key files are a trust root: no ambiguity
+
+
+@pytest.fixture(scope="module")
+def attacker(tmp_path_factory):
+    """A valid Ed25519 public key that is not the gate's."""
+    path = tmp_path_factory.mktemp("attacker") / "keys.json"
+    gen_keys(str(path))
+    return _pub(path)
+
+
+def _key_file(world, name, text):
+    path = world["root"] / name
+    path.write_text(text)
+    return str(path)
+
+
+def _verify_with_key_file(world, text):
+    key = _key_file(world, "candidate.key.json", text)
+    return run_cli(
+        [
+            "verify-bundle",
+            "--bundle",
+            str(world["root"] / "bundle.json"),
+            "--gate-public-key",
+            key,
+        ],
+        cwd=world["root"],
+    )
+
+
+def test_unambiguous_key_files_still_work(world):
+    real = world["gate"]
+    for text in (
+        json.dumps({"public_key": real}),
+        json.dumps({"gate_public_key": real}),
+        json.dumps({"public_key": real, "gate_public_key": real.upper()}),
+        json.dumps({"public_key": real, "private_key": "x" * 8, "alias": "a"}),
+        real + "\n",
+    ):
+        code, out, err = _verify_with_key_file(world, text)
+        assert code == 0, f"{text}: {out}{err}"
+    # the gate's own key file (public and private part) keeps working
+    code, out, err = run_cli(
+        [
+            "verify-bundle",
+            "--bundle",
+            str(world["root"] / "bundle.json"),
+            "--gate-public-key",
+            str(world["root"] / "keys.json"),
+        ],
+        cwd=world["root"],
+    )
+    assert code == 0, out + err
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        # duplicate keys: the last one used to win
+        '{{"public_key": "{atk}", "public_key": "{real}"}}',
+        '{{"public_key": "{real}", "public_key": "{atk}"}}',
+        '{{"public_key": "{real}", "public\\u005fkey": "{atk}"}}',
+        '{{"public_key": "{real}", "public_key": "{real}"}}',
+        # empty candidate with another field present used to fall through to it
+        '{{"public_key": "", "gate_public_key": "{real}"}}',
+        '{{"public_key": "  ", "gate_public_key": "{real}"}}',
+        '{{"public_key": null, "gate_public_key": "{real}"}}',
+        '{{"public_key": "{real}", "gate_public_key": ""}}',
+        # two candidates with different values
+        '{{"public_key": "{real}", "gate_public_key": "{atk}"}}',
+        '{{"public_key": "{atk}", "gate_public_key": "{real}"}}',
+        # not a usable key object
+        '{{"public_key": 12345}}',
+        '{{"public_key": ["{real}"]}}',
+        '{{"gate_public_key": "{real}", "gate_public_key": "{real}"}}',
+        '["{real}"]',
+        "{{}}",
+        '{{"alias": "no key here"}}',
+    ],
+)
+def test_ambiguous_or_malformed_key_files_are_usage_errors(world, attacker, template):
+    text = template.format(real=world["gate"], atk=attacker)
+    code, out, err = _verify_with_key_file(world, text)
+    assert code == 1, f"{text}: exit {code}\n{out}{err}"
+    assert "VERIFIED" not in out and "--gate-public-key" in err
+
+
+def test_executor_key_files_get_the_same_checks(world, attacker):
+    key = _key_file(
+        world,
+        "exec.key.json",
+        f'{{"public_key": "{world["executor"]}", "public_key": "{attacker}"}}',
+    )
+    code, out, err = run_cli(
+        [
+            "verify-bundle",
+            "--bundle",
+            str(world["root"] / "bundle.json"),
+            "--gate-public-key",
+            world["gate"],
+            "--executor-public-key",
+            key,
+        ],
+        cwd=world["root"],
+    )
+    assert code == 1 and "--executor-public-key" in err, out + err

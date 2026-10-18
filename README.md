@@ -756,6 +756,10 @@ Same exit codes as above (0 VERIFIED, 2 INVALID, 1 usage). Python:
 - Fields outside the schema at the top level of a bundle, in its `trace` or in its
   `checkpoint` wrapper are `INVALID` (`UNKNOWN_FIELD (<path>)`): they would be unsigned
   text travelling inside a verified file.
+- A key file (`--gate-public-key FILE`) is the root of trust, so it is read strictly: bare
+  hex, or a JSON object whose `public_key` / `gate_public_key` (one, or both with the same
+  value) is a non-empty string. Repeated keys, an empty or non-string field, or two fields
+  with different keys are usage errors (exit 1).
 - Numbers in signed documents must be integers in the i64/u64 range. A float, or a larger
   integer, can be spelled several ways for one stored value (`0.1` / `1e-1`, `...567890` /
   `...567891`), so the gate refuses it when it arrives (`NON_EXACT_NUMBER`) and the
