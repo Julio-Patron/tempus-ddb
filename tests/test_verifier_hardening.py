@@ -259,3 +259,215 @@ def test_python_api_empty_key_is_an_error_and_none_is_the_documented_unpinned_mo
             )
     unpinned = json.loads(db.verify_trace(world["action_id"], None))
     assert unpinned["trust"]["independent"] is False
+
+
+# ------------------------- 4. VERIFIED must say what was decided / executed
+
+import time  # noqa: E402
+
+from tempus_ddb import gen_keys  # noqa: E402
+from test_independent_verify import _pub  # noqa: E402
+
+
+def _make_blocked_world(base):
+    """No policy installed: the gate signs a BLOCKED receipt (default-deny)."""
+    root = base / "blocked"
+    root.mkdir()
+    assert run_cli(["init"], cwd=root)[0] == 0
+    agent_keys = root / "agent.keys.json"
+    gen_keys(str(agent_keys))
+    code, out, err = run_cli(
+        ["register-agent", "--alias", "buyer", "--agent-keyfile", str(agent_keys)],
+        cwd=root,
+    )
+    assert code == 0, out + err
+    intent = json.dumps(
+        {
+            "schema_version": "tempus.action-intent.v1",
+            "tenant_id": TENANT,
+            "agent_id": _pub(agent_keys),
+            "idempotency_key": "pay-1",
+            "action_type": "purchase",
+            "resource": "vendor/credits",
+            "requested_at": time.time_ns() // 1_000,
+            "input": {},
+            "money": {"amount": "25.00", "asset": "USD", "beneficiary": "v-1"},
+        }
+    )
+    code, out, err = run_cli(
+        ["request-action", "--intent", intent, "--agent-keyfile", str(agent_keys)],
+        cwd=root,
+    )
+    permit = json.loads(out)
+    action_id = permit["authorization"]["action_id"]
+    return {
+        "root": root,
+        "gate": _pub(root / "keys.json"),
+        "action_id": action_id,
+        "decision": permit["authorization"]["decision"],
+    }
+
+
+@pytest.fixture(scope="module")
+def scenarios(world, tmp_path_factory):
+    base = tmp_path_factory.mktemp("scenarios")
+    found = {
+        "done": world,
+        "failed": make_world(base, "failed", status="FAILED"),
+        "no_exec": make_world(base, "noexec", execute=False),
+        "blocked": _make_blocked_world(base),
+    }
+    assert found["blocked"]["decision"] == "BLOCKED"
+    blocked = found["blocked"]
+    blocked["trace_json"] = run_cli(
+        ["trace", "--action-id", blocked["action_id"]], cwd=blocked["root"]
+    )[1]
+    (blocked["root"] / "trace.json").write_text(blocked["trace_json"])
+    for name, w in found.items():
+        for variant, extra in (("nochk", []), ("chk", ["--create-checkpoint"])):
+            path = w["root"] / f"{variant}.bundle.json"
+            code, out, err = run_cli(
+                ["export-bundle", "--action-id", w["action_id"], "--out", str(path)]
+                + extra,
+                cwd=w["root"],
+            )
+            assert code == 0, f"{name}/{variant}: {out}{err}"
+            w[variant] = str(path)
+    return found
+
+
+def _bundle_cli(w, variant, *extra):
+    return run_cli(
+        [
+            "verify-bundle",
+            "--bundle",
+            w[variant],
+            "--gate-public-key",
+            w["gate"],
+            *extra,
+        ],
+        cwd=w["root"],
+    )
+
+
+@pytest.mark.parametrize(
+    "name,decision,execution_status",
+    [
+        ("done", "ALLOWED", "SUCCEEDED"),
+        ("failed", "ALLOWED", "FAILED"),
+        ("no_exec", "ALLOWED", None),
+        ("blocked", "BLOCKED", None),
+    ],
+)
+def test_verified_output_states_decision_and_execution_status(
+    scenarios, name, decision, execution_status
+):
+    w = scenarios[name]
+    code, out, err = _bundle_cli(w, "chk")
+    assert code == 0, out + err
+    result = json.loads(out)
+    assert result["decision"] == decision
+    assert result["execution_status"] == execution_status
+    code, out, err = run_cli(
+        [
+            "verify-trace",
+            "--action-id",
+            w["action_id"],
+            "--gate-public-key",
+            w["gate"],
+        ],
+        cwd=w["root"],
+    )
+    assert code == 0, out + err
+    traced = json.loads(out)
+    assert (traced["decision"], traced["execution_status"]) == (
+        decision,
+        execution_status,
+    )
+    code, out, err = run_cli(
+        [
+            "verify-receipt",
+            "--receipt",
+            str(w["root"] / "trace.json"),
+            "--gate-public-key",
+            w["gate"],
+        ],
+        cwd=w["root"],
+    )
+    assert code == 0, out + err
+    assert json.loads(out)["decision"] == decision
+
+
+def test_invalid_results_do_not_report_a_decision_or_execution_status(scenarios):
+    w = scenarios["done"]
+    bundle = json.loads(open(w["chk"]).read())
+    auth = bundle["trace"]["authorization"]["authorization"]
+    auth["decision"] = "BLOCKED"
+    path = w["root"] / "flipped.bundle.json"
+    path.write_text(json.dumps(bundle))
+    w["flipped"] = str(path)
+    code, out, err = _bundle_cli(w, "flipped")
+    assert code == 2
+    result = json.loads(out)
+    assert result["decision"] is None and result["execution_status"] is None
+
+
+@pytest.mark.parametrize(
+    "name,variant,flags,code",
+    [
+        ("done", "chk", [], 0),
+        (
+            "done",
+            "chk",
+            [
+                "--require-execution",
+                "--require-checkpoint",
+                "--require-decision",
+                "ALLOWED",
+            ],
+            0,
+        ),
+        ("failed", "chk", [], 0),
+        ("failed", "chk", ["--require-execution"], 2),
+        ("no_exec", "chk", ["--require-execution"], 2),
+        ("failed", "nochk", [], 0),
+        ("failed", "nochk", ["--require-checkpoint"], 2),
+        ("blocked", "chk", ["--require-decision", "BLOCKED"], 0),
+        ("blocked", "chk", ["--require-decision", "ALLOWED"], 2),
+        ("blocked", "chk", ["--require-execution"], 2),
+        ("done", "chk", ["--require-decision", "BLOCKED"], 2),
+    ],
+)
+def test_require_flags_on_verify_bundle(scenarios, name, variant, flags, code):
+    got, out, err = _bundle_cli(scenarios[name], variant, *flags)
+    assert got == code, f"{name}/{variant} {flags}: {out}{err}"
+    result = json.loads(out)
+    if code == 2:
+        assert result["status"] == "INVALID"
+        assert any(e.startswith("REQUIREMENT_NOT_MET") for e in result["errors"])
+    else:
+        assert result["status"] == "VERIFIED"
+
+
+def test_require_flags_on_verify_receipt_and_verify_trace(scenarios):
+    for name, wanted in (("done", 0), ("failed", 2), ("no_exec", 2), ("blocked", 2)):
+        w = scenarios[name]
+        trace_args = ["--action-id", w["action_id"], "--gate-public-key", w["gate"]]
+        code, out, err = run_cli(
+            ["verify-trace", *trace_args, "--require-execution"], cwd=w["root"]
+        )
+        assert code == wanted, f"verify-trace {name}: {out}{err}"
+        code, out, err = run_cli(
+            [
+                "verify-receipt",
+                "--receipt",
+                str(w["root"] / "trace.json"),
+                "--gate-public-key",
+                w["gate"],
+                "--require-execution",
+                "--require-decision",
+                "ALLOWED",
+            ],
+            cwd=w["root"],
+        )
+        assert code == wanted, f"verify-receipt {name}: {out}{err}"

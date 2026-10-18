@@ -26,7 +26,7 @@ def _pub(path):
     return json.loads(path.read_text())["public_key"]
 
 
-def make_world(base, name, amount="25.00"):
+def make_world(base, name, amount="25.00", status="SUCCEEDED", execute=True):
     """A complete gate with its own keys: init, register, authorize, execute."""
     root = base / name
     root.mkdir()
@@ -66,10 +66,21 @@ def make_world(base, name, amount="25.00"):
             "schema_version": "tempus.action-outcome.v1",
             "authorization_id": receipt["authorization_id"],
             "action_id": receipt["action_id"],
-            "status": "SUCCEEDED",
+            "status": status,
             "external_reference": "tx-1",
         }
     )
+    if not execute:
+        (root / "trace.json").write_text(
+            run_cli(["trace", "--action-id", receipt["action_id"]], cwd=root)[1]
+        )
+        return {
+            "root": root,
+            "gate": _pub(root / "keys.json"),
+            "executor": _pub(executor_keys),
+            "action_id": receipt["action_id"],
+            "permit": permit,
+        }
     code, out, err = run_cli(
         [
             "commit-outcome",

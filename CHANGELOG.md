@@ -18,6 +18,16 @@
   `--gate-public-key` / `--executor-public-key` now exits 1 on every verifier; only
   omitting the option means "not pinned". In Python an empty string already raised;
   `verify_trace(id, None)` remains the documented unpinned mode.
+- **VERIFIED now says what was decided and executed.** Results of `verify-receipt`,
+  `verify-trace` and `verify-bundle` carry `decision` (`ALLOWED`/`BLOCKED`) and
+  `execution_status` (`SUCCEEDED`/`FAILED`, `null` when there is no outcome); both are
+  `null` unless the whole result verifies. New flags make the exit code mean more than
+  "the signatures are fine": `--require-execution` (a verified outcome with status
+  `SUCCEEDED`), `--require-decision ALLOWED|BLOCKED` and, on `verify-bundle`,
+  `--require-checkpoint` (a checkpoint that verifies and includes the permit and outcome).
+  An unmet requirement exits 2 with status `INVALID` and `REQUIREMENT_NOT_MET (...)`.
+  Without the flags a BLOCKED bundle, a FAILED outcome or a bundle with no execution or
+  checkpoint still verifies, as before.
 
 ### Security: executors no longer follow redirects
 - The HTTP, GitHub and Slack executor transports used `urllib.request.urlopen`, which

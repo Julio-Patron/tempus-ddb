@@ -2297,12 +2297,24 @@ fn verify_documents(
     } else {
         "VERIFIED"
     };
+    // What the signed documents say, shown only when the whole result verifies so a
+    // reader never takes a decision or status from a document that failed verification.
+    let signed_text = |document: Option<&Value>, pointer: &str| -> Value {
+        match (status, document.and_then(|doc| doc.pointer(pointer))) {
+            ("VERIFIED", Some(Value::String(text))) => json!(text),
+            _ => Value::Null,
+        }
+    };
+    let decision = signed_text(authorization, "/authorization/decision");
+    let execution_status = signed_text(execution, "/receipt/status");
     canonicalize(&json!({
         "schema_version": TRACE_VERIFICATION_SCHEMA,
         "status": status,
         "kind": kind,
         "action_id": action_id,
         "phase": phase,
+        "decision": decision,
+        "execution_status": execution_status,
         "trust": trust_json(trust, authorization.is_none() && execution.is_some()),
         "checks": {
             "authorization": authorization_check,
@@ -2369,6 +2381,8 @@ fn push_error(result: &mut Value, code: &str) {
         errors.push(json!(code));
     }
     result["status"] = json!("INVALID");
+    result["decision"] = Value::Null;
+    result["execution_status"] = Value::Null;
 }
 
 /// Legacy verification: trust root taken from the database itself.

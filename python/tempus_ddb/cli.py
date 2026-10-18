@@ -541,8 +541,46 @@ def _read_text_argument(value, label):
     raise ValueError(f"--{label}: file not found: {value}")
 
 
-def _print_verification(result_json):
-    parsed = json.loads(result_json)
+REQUIREMENT_NOT_MET = "REQUIREMENT_NOT_MET"
+
+
+def _apply_requirements(parsed, args):
+    """Turn a VERIFIED result into INVALID when a --require-* condition is unmet.
+
+    The signatures are checked first; these flags then say what the verified evidence
+    must show (so an exit code of 0 can be read as "authorized and executed").
+    """
+    if parsed.get("status") != "VERIFIED":
+        return parsed
+    unmet = []
+    require_decision = getattr(args, "require_decision", None)
+    if require_decision and parsed.get("decision") != require_decision:
+        unmet.append(
+            f"decision (required {require_decision}, got {parsed.get('decision')})"
+        )
+    if getattr(args, "require_execution", False) and (
+        parsed.get("execution_status") != "SUCCEEDED"
+    ):
+        unmet.append(
+            f"execution (required SUCCEEDED, got {parsed.get('execution_status')})"
+        )
+    if getattr(args, "require_checkpoint", False) and (
+        parsed.get("checks", {}).get("checkpoint") != "VERIFIED"
+    ):
+        unmet.append(
+            f"checkpoint (required VERIFIED, got "
+            f"{parsed.get('checks', {}).get('checkpoint', 'NOT_PRESENT')})"
+        )
+    if unmet:
+        parsed["status"] = "INVALID"
+        parsed.setdefault("errors", []).extend(
+            f"{REQUIREMENT_NOT_MET} ({item})" for item in unmet
+        )
+    return parsed
+
+
+def _print_verification(result_json, args=None):
+    parsed = _apply_requirements(json.loads(result_json), args)
     print(json.dumps(parsed, indent=2))
     if parsed.get("status") != "VERIFIED":
         sys.exit(2)
@@ -562,6 +600,8 @@ def run_trace(args, *, verify=False):
         else:
             result = db.get_trace(args.action_id)
         parsed = json.loads(result)
+        if verify:
+            parsed = _apply_requirements(parsed, args)
         print(json.dumps(parsed, indent=2))
         if verify and parsed.get("status") == "INVALID":
             sys.exit(2)
@@ -584,7 +624,7 @@ def run_verify_receipt(args):
     except Exception as exc:
         print(f"[ERROR] Receipt verification failed: {exc}", file=sys.stderr)
         sys.exit(1)
-    _print_verification(result)
+    _print_verification(result, args)
 
 
 def run_export_bundle(args):
@@ -638,7 +678,7 @@ def run_verify_bundle(args):
     except Exception as exc:
         print(f"[ERROR] Bundle verification failed: {exc}", file=sys.stderr)
         sys.exit(1)
-    _print_verification(result)
+    _print_verification(result, args)
 
 
 def _gate(args):
@@ -966,6 +1006,28 @@ def _add_pin_arguments(parser, *, required=False, executors=True):
         )
 
 
+def _add_require_arguments(parser, *, checkpoint=False):
+    """Conditions the verified evidence must meet for the command to exit 0."""
+    parser.add_argument(
+        "--require-execution",
+        action="store_true",
+        help="Exit 2 unless the evidence contains a verified execution with status "
+        "SUCCEEDED (a BLOCKED, FAILED or missing outcome is not enough)",
+    )
+    parser.add_argument(
+        "--require-decision",
+        choices=["ALLOWED", "BLOCKED"],
+        help="Exit 2 unless the gate's signed decision equals this value",
+    )
+    if checkpoint:
+        parser.add_argument(
+            "--require-checkpoint",
+            action="store_true",
+            help="Exit 2 unless the bundle holds a checkpoint that verifies and "
+            "includes the permit and the outcome",
+        )
+
+
 def run_version():
     print(f"tempus {__version__}")
 
@@ -1166,6 +1228,7 @@ def main():
     )
     verify_trace_p.add_argument("--action-id", required=True)
     _add_pin_arguments(verify_trace_p)
+    _add_require_arguments(verify_trace_p)
 
     verify_receipt_p = subparsers.add_parser(
         "verify-receipt",
@@ -1179,6 +1242,7 @@ def main():
         "tempus.authorization-result.v1 or tempus.execution-result.v1",
     )
     _add_pin_arguments(verify_receipt_p, required=True)
+    _add_require_arguments(verify_receipt_p)
 
     export_bundle_p = subparsers.add_parser(
         "export-bundle",
@@ -1213,6 +1277,7 @@ def main():
         "--bundle", required=True, help="Bundle JSON file (or '-' for stdin)"
     )
     _add_pin_arguments(verify_bundle_p, required=True)
+    _add_require_arguments(verify_bundle_p, checkpoint=True)
 
     # checkpoint subcommands
     chk_parser = subparsers.add_parser(
