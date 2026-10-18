@@ -220,10 +220,34 @@ tenant without its own policy is denied as well. Install a policy before expecti
 Policies define allowed tenants, agents, actions, resources, rate ceilings, minor-unit
 currency limits, and authorized executors.
 
+Write a policy for your tenant, naming the executor identity you registered above (the
+`public_key` field of `executor.keys.json`), then install it:
+
 ```bash
+EXECUTOR_PUB=$(python -c "import json; print(json.load(open('executor.keys.json'))['public_key'])")
+cat > acme-github-policy.json <<EOF
+{
+  "schema_version": "tempus.policy-bundle.v1",
+  "policy_version": "acme-github-v1",
+  "tenant_id": "acme",
+  "constraints": {
+    "allowed_action_types": ["github.create_issue", "github.create_pull_request"],
+    "allowed_resources": ["acme/*"],
+    "allowed_executors": ["$EXECUTOR_PUB"],
+    "max_ttl_seconds": 60,
+    "max_input_bytes": 16384,
+    "allowed_currencies": ["USD"]
+  }
+}
+EOF
+
 tempus install-policy --policy acme-github-policy.json
 tempus list-policies
 ```
+
+The same template ships as `config/policy.github.example.json` in the source tree, with a
+`REPLACE_WITH_EXECUTOR_ED25519_PUBLIC_KEY` placeholder that you must replace;
+`install-policy` refuses a file that still contains a `REPLACE_WITH_` placeholder.
 
 ### Local development only: `--allow-all-dev`
 
