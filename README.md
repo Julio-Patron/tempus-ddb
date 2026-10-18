@@ -662,6 +662,24 @@ and, with a checkpoint, checks that the permit and outcome events are in the sig
 Same exit codes as above (0 VERIFIED, 2 INVALID, 1 usage). Python:
 `TempusDDB.export_bundle(id)` and `verify_bundle(json, gate_pub, executor_pubs=None)`.
 
+### What VERIFIED means, and how strict it is
+
+- A document that repeats a JSON object key anywhere (`"amount":"9999.00","amount":"25.00"`)
+  is `INVALID` (`DUPLICATE_JSON_KEY`): parsers disagree on which value wins.
+- Fields outside the schema at the top level of a bundle, in its `trace` or in its
+  `checkpoint` wrapper are `INVALID` (`UNKNOWN_FIELD (<path>)`): they would be unsigned
+  text travelling inside a verified file.
+- `--gate-public-key` and `--executor-public-key` must not be empty: an empty value (for
+  example an unset shell variable) is a usage error (exit 1), never "unpinned".
+- `VERIFIED` alone does not say that the action was allowed or executed: a `BLOCKED`
+  decision, a `FAILED` outcome, or a permit with no outcome or checkpoint all verify. The
+  result shows `decision` and `execution_status` (both `null` unless the result is
+  `VERIFIED`), and these flags turn an unmet expectation into exit 2 (`INVALID`,
+  `REQUIREMENT_NOT_MET (...)`): `--require-decision ALLOWED|BLOCKED`,
+  `--require-execution` (a verified outcome with status `SUCCEEDED`) and, on
+  `verify-bundle`, `--require-checkpoint`. A script that only looks at the exit code should
+  pass the ones that matter to it.
+
 What a pinned verification (receipt or bundle) does **not** show; the result lists these in
 `trust.not_checked`:
 
