@@ -178,10 +178,21 @@ pip install ./tempus_ddb-0.5.3-<platform>.whl
 ```
 
 ### 3. From Source (Development)
+
+Building from source compiles the Rust extension, so you need a **Rust toolchain**
+(minimum supported version `rust-version = "1.88"`, see `Cargo.toml`; the repository
+pins `1.99.1` in `rust-toolchain.toml`, which `rustup` installs for you on first build)
+plus a C linker (`build-essential` / Xcode command line tools / MSVC build tools).
+The PyPI and release wheels above need no Rust.
+
 ```bash
+# Install Rust once (https://rustup.rs), then reopen your shell or: . "$HOME/.cargo/env"
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
 git clone https://github.com/elbuilder77/tempus-ddb.git
 cd tempus-ddb
-pip install -e ".[dev]"
+pip install -e ".[dev]"      # builds the extension with maturin; takes a few minutes
+tempus --version
 ```
 
 ## Bootstrap identities
