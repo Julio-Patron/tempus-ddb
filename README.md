@@ -23,8 +23,15 @@
 
 ### ⚡ Quick Install
 ```bash
-pip install tempus-ddb
+git clone https://github.com/elbuilder77/tempus-ddb.git
+cd tempus-ddb
+pip install -e ".[dev]"      # compiles the Rust extension: needs a Rust toolchain (see Install)
+tempus --version
 ```
+> The PyPI release (`pip install tempus-ddb`, 0.5.3) predates default-deny and independent
+> verification: it still seeds an allow-all policy on `tempus init` and has no
+> `verify-receipt`, `export-bundle`, `verify-bundle` or `--allow-all-dev`. The flows in
+> this README need the source install above until a new release is published.
 
 ### 🚀 [Try the Live Interactive Trace Demo →](https://julio-patron.github.io/tempus-ddb/)
 *Verify real cryptographic hashes, Ed25519 signatures, and tamper detection directly in your browser.*
@@ -166,6 +173,10 @@ cannot read the executor's environment or key material.
 Python 3.10 or newer is required.
 
 ### 1. From PyPI (Standard & Verified)
+> **Not enough for this README yet.** PyPI 0.5.3 does not include default-deny or
+> independent verification (`verify-receipt`, `export-bundle`, `verify-bundle`,
+> `--allow-all-dev`); use section 3 (from source) to follow the commands below.
+
 Tempus DDB is published to PyPI using **Trusted Publishing (OIDC)** and **Sigstore provenance attestations** on every artifact:
 ```bash
 python -m pip install tempus-ddb
