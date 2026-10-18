@@ -176,7 +176,9 @@ class GitHubActionAdapter:
     ) -> Tuple[str, str, Dict[str, Any], str, str]:
         action_type = self._required_string(intent, "action_type")
         resource = self._required_string(intent, "resource")
-        if not RESOURCE_PATTERN.fullmatch(resource):
+        if not RESOURCE_PATTERN.fullmatch(resource) or {".", ".."} & set(
+            resource.split("/")
+        ):
             raise GitHubExecutorError(
                 "resource must be an exact 'owner/repository' value"
             )

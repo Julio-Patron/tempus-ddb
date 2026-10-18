@@ -144,11 +144,11 @@ class PaymentActionAdapter:
         allowed_env = os.environ.get("PAYMENT_ALLOWED_BENEFICIARIES")
         if allowed_beneficiaries is not None:
             self._allowed_beneficiaries = {
-                b.strip().lower() for b in allowed_beneficiaries if b.strip()
+                b.strip() for b in allowed_beneficiaries if b.strip()
             }
         elif allowed_env:
             self._allowed_beneficiaries = {
-                b.strip().lower() for b in allowed_env.split(",") if b.strip()
+                b.strip() for b in allowed_env.split(",") if b.strip()
             }
         else:
             self._allowed_beneficiaries = None
@@ -173,10 +173,11 @@ class PaymentActionAdapter:
             raise PaymentExecutorError("Missing 'beneficiary' in money metadata")
 
         if self._allowed_beneficiaries is not None:
-            b_norm = beneficiary.strip().lower()
+            # Compare the value the transport will receive, as written: no strip or
+            # case-folding that would let "ALICE " pass for "alice" and then be paid as is.
             allowed = any(
-                b_norm == ab
-                or (ab.endswith("*") and b_norm.startswith(ab[:-1]))
+                beneficiary == ab
+                or (ab.endswith("*") and beneficiary.startswith(ab[:-1]))
                 or ab == "*"
                 for ab in self._allowed_beneficiaries
             )

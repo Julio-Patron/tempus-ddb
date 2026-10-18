@@ -46,6 +46,32 @@
 - Limit: minor units always assume two decimals; currencies with other exponents (JPY, BHD)
   need the policy limit expressed with that in mind.
 
+### Security: audit of "the policy/validation reads X, the executor uses Y"
+Every field an executor uses was traced to what the policy (or the executor's own check)
+evaluates. Policy evaluates: `tenant_id`, `action_type`, `resource` (textual patterns),
+`ttl`, `input` (only size and integer-only numbers) and `money`. Executors also re-run the
+policy on the permit's intent before consuming it, and read the same intent text.
+- Fixed, money (see above): `amount`/`amount_minor`, `currency`/`asset`, wrong types.
+- Fixed, HTTP executor: it validated `resource.strip()` but requested the raw string, and
+  `urlsplit` drops tabs/newlines that urllib keeps. A URL with whitespace, control
+  characters, backslashes or credentials (`user:pw@host`, `host@other`) is now refused, and
+  the validated string is the one requested.
+- Fixed, GitHub executor: `owner/repository` accepted `.` and `..`, so `acme/..` requested
+  `/repos/acme/../issues`. Dot segments are refused (names that merely contain dots work).
+- Fixed, payment executor: its beneficiary allowlist compared a stripped, lower-cased value
+  while the transport received the original (`"ALICE "` passed for `"alice"`). It now
+  compares the value as written. **Behaviour change:** `allowed_beneficiaries` /
+  `PAYMENT_ALLOWED_BENEFICIARIES` are case-sensitive and exact (prefix `*` patterns kept).
+- Checked, no mismatch: `action_type` (policy, runtime support check, HTTP method and
+  GitHub endpoint use the same string), `resource` for Slack (channel) and GitHub, the
+  permit's `intent` (Rust and Python read the same text; the executor re-evaluates the
+  policy on it), `money.beneficiary` (policy and executor read the same field).
+- Not evaluated by the policy by design, so not a mismatch but worth knowing: the contents
+  of `input` (message text, issue title, PR `head`/`base`, HTTP body). Constrain them in the
+  executor or by `action_type`/`resource`. `allowed_resources` patterns are textual: use
+  `https://api.example.com/*` (with the slash), not `https://api.example.com*`, which also
+  matches `https://api.example.com.evil.net/`.
+
 ### Security: verifier hardening (independent forge findings)
 - **Duplicate JSON keys are INVALID.** `serde_json` kept the last value of a repeated key
   (`"amount":"9999.00","amount":"25.00"` verified), so a document could verify while a

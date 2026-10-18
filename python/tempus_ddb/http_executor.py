@@ -30,8 +30,24 @@ class HttpAPIError(HttpExecutorError):
 def _validate_https_url(
     target_url: str, allowed_domains: Optional[Set[str]] = None
 ) -> str:
-    candidate = target_url.strip()
+    # The URL that is validated must be byte for byte the URL that is requested (and the
+    # string the policy matched): urlsplit drops tabs and newlines and `.strip()` removes
+    # padding, which urllib keeps, so anything they would disagree on is refused.
+    if not isinstance(target_url, str) or any(
+        char.isspace() or char == "\\" or ord(char) < 0x20 or ord(char) == 0x7F
+        for char in target_url
+    ):
+        raise HttpExecutorError(
+            "Target URL must not contain whitespace, control characters or backslashes"
+        )
+    candidate = target_url
     parsed = parse.urlsplit(candidate)
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or "@" in parsed.netloc
+    ):
+        raise HttpExecutorError("Target URL must not contain credentials")
     if parsed.scheme != "https" or not parsed.netloc:
         raise HttpExecutorError("Target URL must be a valid HTTPS endpoint")
 
@@ -149,8 +165,7 @@ class HttpActionAdapter:
 
     def execute_action(self, intent: Dict[str, Any]) -> ExecutionResult:
         action_type = intent.get("action_type")
-        target_url = intent.get("resource")
-        _validate_https_url(target_url, self._allowed_domains)
+        target_url = _validate_https_url(intent.get("resource"), self._allowed_domains)
 
         input_data = intent.get("input", {})
         method = "PUT" if action_type == "http.put" else "POST"
