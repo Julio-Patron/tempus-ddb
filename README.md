@@ -636,7 +636,8 @@ tempus checkpoint verify --checkpoint chk.json --stream stream.json --gate-publi
 `verify-receipt` takes a trace (`tempus.action-trace.v1`), a permit
 (`tempus.authorization-result.v1`) or an outcome (`tempus.execution-result.v1`); `-` reads
 stdin. Exit code `0` is VERIFIED, `2` is INVALID (tampered receipt, wrong key, or a
-database signed by someone else) and `1` is a usage or I/O error. `--strict` refuses to run
+database signed by someone else) and `1` is a usage or I/O error (a missing or invalid
+argument, an unreadable file, an empty key); the two never share a code. `--strict` refuses to run
 without `--gate-public-key`. Python: `verify_receipt(json, gate_pub, executor_pubs=None)`,
 `verify_checkpoint(chk, stream, gate_pub)` and `TempusDDB.verify_trace(id, gate_pub)`.
 

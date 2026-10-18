@@ -1032,8 +1032,19 @@ def run_version():
     print(f"tempus {__version__}")
 
 
+class _UsageErrorParser(argparse.ArgumentParser):
+    """argparse exits 2 on a usage error, which would collide with INVALID (2).
+
+    Exit codes: 0 success / VERIFIED, 1 usage or operational error, 2 INVALID.
+    """
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(1, f"{self.prog}: error: {message}\n")
+
+
 def main():
-    parser = argparse.ArgumentParser(
+    parser = _UsageErrorParser(
         prog="tempus",
         description="Tempus DDB - The B2A security gate for autonomous agent actions",
     )

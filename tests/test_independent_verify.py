@@ -271,7 +271,7 @@ def test_verify_receipt_rejects_tampering_wrong_key_and_forged_database(
 def test_verify_receipt_requires_key_and_reads_stdin(worlds, tmp_path):
     real, _ = worlds
     code, _, err = run_cli(["verify-receipt", "--receipt", "x.json"], cwd=tmp_path)
-    assert code == 2 and "--gate-public-key" in err  # argparse: required
+    assert code == 1 and "--gate-public-key" in err  # usage error: required
     cmd = [
         sys.executable,
         "-m",
@@ -471,7 +471,7 @@ def test_bundle_wrong_keys_and_bad_usage(worlds, tmp_path):
     code, _, err = _verify_bundle(path, "not-a-key", tmp_path)
     assert code == 1 and "64 hex" in err
     code, _, err = run_cli(["verify-bundle", "--bundle", str(path)], cwd=tmp_path)
-    assert code == 2 and "--gate-public-key" in err  # argparse: required
+    assert code == 1 and "--gate-public-key" in err  # usage error: required
     code, _, err = _verify_bundle(tmp_path / "missing.json", real["gate"], tmp_path)
     assert code == 1 and "not found" in err
     not_a_bundle = tmp_path / "x.json"

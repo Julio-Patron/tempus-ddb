@@ -28,6 +28,11 @@
   An unmet requirement exits 2 with status `INVALID` and `REQUIREMENT_NOT_MET (...)`.
   Without the flags a BLOCKED bundle, a FAILED outcome or a bundle with no execution or
   checkpoint still verifies, as before.
+- **Usage errors exit 1, INVALID exits 2.** `argparse` exits 2 on a missing or invalid
+  argument, the same code as `INVALID`, so a script could not tell a typo from a forged
+  receipt. Every `tempus` usage error (missing required argument, unknown option or
+  command, bad `--require-decision` value) now exits 1; `--help` still exits 0. Breaking
+  for callers that treated exit 2 from a missing argument as usage.
 
 ### Security: executors no longer follow redirects
 - The HTTP, GitHub and Slack executor transports used `urllib.request.urlopen`, which

@@ -471,3 +471,32 @@ def test_require_flags_on_verify_receipt_and_verify_trace(scenarios):
             cwd=w["root"],
         )
         assert code == wanted, f"verify-receipt {name}: {out}{err}"
+
+
+# ------------------------------ 5. usage errors exit 1, INVALID exits 2 (argparse)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["verify-receipt", "--receipt", "x.json"],  # --gate-public-key missing
+        ["verify-bundle", "--bundle", "x.json"],
+        ["verify-bundle", "--gate-public-key", "00" * 32],  # --bundle missing
+        ["export-bundle", "--out", "x.json"],  # --action-id missing
+        ["verify-trace"],
+        ["verify-bundle", "--bundle", "x", "--gate-public-key", "k", "--bogus"],
+        ["verify-bundle", "--bundle", "x", "--require-decision", "MAYBE"],
+        ["no-such-command"],
+    ],
+)
+def test_usage_errors_exit_1_never_2(args, tmp_path):
+    code, out, err = run_cli(args, cwd=tmp_path)
+    assert code == 1, f"{args}: exit {code}\n{out}{err}"
+    assert "usage:" in err and out == ""
+
+
+def test_help_still_exits_0_and_invalid_still_exits_2(world):
+    assert run_cli(["verify-bundle", "--help"], cwd=world["root"])[0] == 0
+    assert run_cli(["--help"], cwd=world["root"])[0] == 0
+    code, out, _ = _verify_bundle(world, json.dumps(world["bundle"]), key="00" * 32)
+    assert code == 2 and json.loads(out)["status"] == "INVALID"
