@@ -9,9 +9,11 @@ upgrade on copies.
    enforce.
 2. Start the gate once to apply the new tables and identity metadata columns. Existing
    signed registrations are backfilled with their public key as the stable identity ID.
-3. Install a tenant policy based on `config/policy.github.example.json`. If no tenant
-   policy exists, the first authorization request creates the signed compatibility
-   baseline; that baseline is for migration and local evaluation, not production.
+3. Install a tenant policy based on `config/policy.github.example.json`. Without an
+   installed policy the gate denies every action (`POLICY_NOT_INSTALLED`). Earlier
+   0.4.x/0.5.x builds seeded an allow-all `tempus.baseline.v1` policy on first use; that
+   baseline is no longer created and one left in an existing database is ignored. For
+   local evaluation only, opt in explicitly with `tempus install-policy --allow-all-dev`.
 4. Run `tempus doctor --json` and `tempus conformance --signer` before enabling effects.
 5. Rotate development keyfiles or configure Vault Transit for production workloads, then
    verify an end-to-end trace in the target environment.

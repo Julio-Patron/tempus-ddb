@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Security / Breaking
+- **Default-deny.** The gate no longer seeds the allow-all `tempus.baseline.v1` (`"*"`)
+  policy on `init`, first agent registration or first use, and tenants without their own
+  policy no longer fall back to it. With no installed policy the gate issues a signed
+  `BLOCKED` receipt with reason code `POLICY_NOT_INSTALLED` (verifiable by `verify-trace`;
+  such a receipt can never verify as `ALLOWED`). A baseline already present in an older
+  database is ignored.
+- **Opt-in development mode.** `tempus init --allow-all-dev`, `tempus install-policy
+  --allow-all-dev`, `TempusDDB.install_allow_all_dev_policy()` (Python, `UserWarning`) and
+  `SqliteStorage::install_allow_all_dev_policy()` / `tempus-ddb-core install-allow-all-dev`
+  (Rust) install a signed allow-all policy, versioned `tempus.dev-allow-all.v1.<ts>`. It is
+  not exposed over MCP. `tempus doctor` fails `active_policy` while only it is active.
+- Migration: install a real policy, or opt in with `--allow-all-dev` for development.
+
 ## [0.5.3] - 2026-09-26
 
 First published build of the 0.5.2 security line. The `v0.5.2` release workflow

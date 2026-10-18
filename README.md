@@ -199,8 +199,9 @@ tempus register-agent --alias purchasing-agent --agent-keyfile agent.keys.json \
   --metadata '{"tenant_id":"acme"}'
 tempus register-agent --alias purchasing-executor --agent-keyfile executor.keys.json \
   --metadata '{"tenant_id":"acme"}'
-tempus doctor --json
 tempus conformance --signer
+# Next: install a policy (below). Until then the gate denies every action and
+# `tempus doctor --json` reports `active_policy: FAIL`.
 ```
 
 The gate signer configuration is the global `--keyfile` and defaults to `keys.json`.
@@ -210,6 +211,12 @@ to Vault without placing a private key in the file.
 
 ## Install a signed policy bundle
 
+**Default-deny.** A gate with no installed policy denies every action: the signed
+receipt is `BLOCKED` with the reason code `POLICY_NOT_INSTALLED`. Nothing is seeded by
+`tempus init`, by the first registration, or when the database is reopened, and a
+tenant without its own policy is denied as well. Install a policy before expecting any
+`ALLOWED` receipt.
+
 Policies define allowed tenants, agents, actions, resources, rate ceilings, minor-unit
 currency limits, and authorized executors.
 
@@ -217,6 +224,30 @@ currency limits, and authorized executors.
 tempus install-policy --policy acme-github-policy.json
 tempus list-policies
 ```
+
+### Local development only: `--allow-all-dev`
+
+To try the flow without writing a policy, opt in explicitly. This installs a signed
+policy that **allows every action, resource and executor** for every tenant without its
+own policy. The CLI prints a warning, `tempus doctor` reports `active_policy: FAIL`
+while it is active, and every receipt carries the `tempus.dev-allow-all.v1.*`
+`policy_version`. Never use it in production.
+
+```bash
+tempus init --allow-all-dev            # or, on an existing gate:
+tempus install-policy --allow-all-dev
+```
+
+Equivalents: `TempusDDB.install_allow_all_dev_policy()` (Python, emits a `UserWarning`),
+`SqliteStorage::install_allow_all_dev_policy()` and
+`tempus-ddb-core install-allow-all-dev` (Rust). It is not exposed through MCP, so an
+agent cannot switch the gate to allow-all. Installing a real policy for the same
+tenant `*` later replaces it; a gate whose active `*` policy is not the dev one refuses
+`--allow-all-dev` (`TEMPUS_DEV_ALLOW_ALL_REFUSED`).
+
+Upgrading: a database seeded by an older gate still contains `tempus.baseline.v1`.
+It is now ignored (the gate denies). Install a real policy, or opt in with
+`--allow-all-dev` for development.
 
 Policy evaluation is deterministic and rejects unknown constraints, floating-point input,
 oversized input, tenant/resource/action mismatches, excessive TTL, disallowed executors,
@@ -262,6 +293,24 @@ with open("executor.keys.json", encoding="utf-8") as handle:
 gate.register_agent(gate_id, "tempus-gate", '{"can_delegate":true}')
 gate.register_agent(agent_id, "purchasing-agent", "{}")
 gate.register_agent(executor_id, "purchasing-executor", "{}")
+
+# Default-deny: without an installed policy every request is BLOCKED
+# (POLICY_NOT_INSTALLED). Install a signed policy for the tenant first.
+gate.install_policy(json.dumps({
+    "schema_version": "tempus.policy-bundle.v1",
+    "policy_version": "acme-purchasing-v1",
+    "tenant_id": "acme",
+    "constraints": {
+        "allowed_action_types": ["purchase"],
+        "allowed_resources": ["vendor-api/*"],
+        "allowed_executors": [executor_id],
+        "max_ttl_seconds": 60,
+        "max_input_bytes": 16384,
+        "allowed_currencies": ["USD"],
+        "max_money_amount_minor": 5000,
+    },
+}))
+# Development shortcut only: gate.install_allow_all_dev_policy() allows everything.
 
 intent = json.dumps({
     "schema_version": "tempus.action-intent.v1",
