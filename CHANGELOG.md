@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Documentation
+- Legacy ledger (`tempus record` / `tempus verify`, `TEMPUS_LEGACY_TOOLS=1`) is documented
+  as **not verifiable evidence**: it accepts floats and huge integers and hashes the parsed
+  value, so an edited copy (`1e2` -> `100.0`, `...890` -> `...891`) still validates. Decision:
+  document rather than apply the exact-number rule there (see README, "Legacy ledger"):
+  it is a voluntary flight recorder, enforcing the rule in `verify` would invalidate
+  existing ledgers, and enforcing it only in `record` would leave old records and `verify`
+  unchanged. Evidence belongs in the signed B2A flow.
 - README: a complete, runnable CLI walkthrough (policy, `request-action`, `commit-outcome`,
   `verify-receipt` / `verify-trace --strict`, `export-bundle` / `verify-bundle`), where the
   executors' `permit.json` comes from, what `VERIFIED` does and does not mean, and install

@@ -804,6 +804,14 @@ compatibility and migration. They are a voluntary flight recorder and do not enf
 the B2A toll. New autonomous integrations should use the signed action authorization
 flow; local keyfile MCP tools are development compatibility only.
 
+**The legacy ledger is not verifiable evidence.** It does not apply the exact-number rule
+of the gate (floats and integers beyond 64 bits are accepted by `tempus record`), and its
+hash is computed over the *parsed* payload, so `tempus verify` still reports a ledger as
+valid after a number in a stored payload is edited to another spelling of the same f64
+(`1e2` -> `100.0`, `...567890` -> `...567891` for a 30-digit integer). Do not present a
+legacy ledger to an auditor as proof; use the signed flow (`verify-receipt`,
+`export-bundle` / `verify-bundle`) for that.
+
 ## Security boundary
 
 This implementation detects receipt, policy, evidence, and trace alteration; rejects

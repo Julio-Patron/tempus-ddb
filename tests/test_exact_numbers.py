@@ -314,3 +314,59 @@ def test_cyclic_result_is_recorded_degraded_and_the_repr_is_bounded():
     assert receipt["status"] == "SUCCEEDED", receipt
     assert receipt["output"]["_tempus_output_degraded"] is True
     assert len(json.dumps(receipt["output"])) < 2000
+
+
+# ----------- legacy ledger: documented as giving no exact-number guarantee
+
+ROOT = Path(__file__).parent.parent
+
+
+def _legacy_section() -> str:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    start = readme.index("## Legacy ledger")
+    return readme[start : readme.index("\n## ", start + 1)]
+
+
+def test_readme_and_changelog_say_the_legacy_ledger_is_not_verifiable_evidence():
+    section = _legacy_section()
+    assert "not verifiable evidence" in section
+    assert "exact-number" in section
+    assert "tempus verify" in section
+    unreleased = (
+        (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").split("\n## [", 2)[1]
+    )
+    assert "legacy ledger" in unreleased.lower()
+    assert "not verifiable evidence" in unreleased
+
+
+def test_legacy_ledger_still_validates_an_edited_number_which_is_why_it_is_documented():
+    """Pins the limit the docs describe: `verify` hashes the parsed (f64) value."""
+    import sqlite3
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        db = os.path.join(tmpdir, "legacy.db")
+        code, out, err = run_cli(["init", "--allow-all-dev"], cwd=tmpdir)
+        assert code == 0, (out, err)
+        code, out, err = run_cli(
+            [
+                "--db",
+                db,
+                "record",
+                "--genesis",
+                "--payload",
+                '{"v":1e2,"big":123456789012345678901234567890}',
+                "--rules",
+                '{"r":1}',
+            ],
+            cwd=tmpdir,
+        )
+        assert code == 0, (out, err)
+        for old, new in (("1e2", "100.0"), ("567890}", "567891}")):
+            conn = sqlite3.connect(db)
+            conn.execute(
+                "update decisions set payload = replace(payload, ?, ?)", (old, new)
+            )
+            conn.commit()
+            conn.close()
+            code, out, err = run_cli(["--db", db, "verify"], cwd=tmpdir)
+            assert code == 0 and "valid" in out, (old, new, out, err)
