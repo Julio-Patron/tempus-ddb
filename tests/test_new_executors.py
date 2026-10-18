@@ -108,6 +108,7 @@ def test_http_executor_adapter():
             trusted_gate_id=gate_id,
             trusted_tenant_id=tenant_id,
             auth_header="Bearer secret-isolated-token",
+            allowed_domains={"api.example.com"},
             transport=transport,
         )
 

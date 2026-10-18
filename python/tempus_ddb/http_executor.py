@@ -155,6 +155,15 @@ class HttpActionAdapter:
             }
         else:
             self._allowed_domains = None
+        if self._auth_header and not self._allowed_domains:
+            # Fail closed: the header is added to every request, so without an allowlist a
+            # policy pattern that is too wide (`https://host*`) sends the secret anywhere.
+            raise HttpExecutorError(
+                "Refusing to start: an Authorization header is configured without a "
+                "domain allowlist (allowed_domains / --allowed-domains / "
+                "HTTP_EXECUTOR_ALLOWED_DOMAINS). Name the hosts that may receive the "
+                "secret, or pass '*' to accept every host explicitly."
+            )
         self._transport = transport or UrllibHttpTransport(
             allowed_domains=self._allowed_domains
         )

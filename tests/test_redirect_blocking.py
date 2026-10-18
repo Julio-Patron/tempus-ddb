@@ -104,7 +104,9 @@ def _http_intent(url):
 
 
 def _http_adapter():
-    return HttpActionAdapter(auth_header="Bearer HTTP-SECRET-TOKEN")
+    return HttpActionAdapter(
+        auth_header="Bearer HTTP-SECRET-TOKEN", allowed_domains={"127.0.0.1"}
+    )
 
 
 @pytest.mark.parametrize("code", REDIRECT_CODES)

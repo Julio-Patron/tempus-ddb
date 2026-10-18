@@ -371,6 +371,15 @@ class ExecutorRuntime:
         with open(args.permit, "r", encoding="utf-8") as f:
             permit_content = f.read()
 
+        # Build the adapter first: a configuration the adapter refuses (for example
+        # credentials without an allowlist) must stop the process before the permit is
+        # read by the runtime, and without a traceback.
+        try:
+            adapter = adapter_factory(args)
+        except Exception as exc:
+            print(f"Executor configuration error: {exc}", file=sys.stderr)
+            sys.exit(1)
+
         runtime = cls(
             executor_db=args.executor_db,
             executor_keyfile=args.executor_keyfile,
@@ -379,8 +388,6 @@ class ExecutorRuntime:
             executor_pool_size=args.executor_pool_size,
             gate_db=args.gate_db,
         )
-
-        adapter = adapter_factory(args)
         try:
             receipt = runtime.execute_permit(permit_content, adapter)
             print(receipt)

@@ -563,8 +563,24 @@ tempus-http-executor \
   --executor-keyfile executor.keys.json \
   --gate-id <gate-public-key> \
   --tenant-id acme \
+  --allowed-domains api.example.com \
   --auth-header "Bearer <isolated-api-secret>"
 ```
+
+- **Credentials need an allowlist.** The `Authorization` header is added to every request,
+  so the executor refuses to start with `--auth-header` (or `HTTP_EXECUTOR_AUTH_HEADER`)
+  unless `--allowed-domains` / `allowed_domains` / `HTTP_EXECUTOR_ALLOWED_DOMAINS` names the
+  hosts that may receive it (`*` accepts every host, explicitly). A host matches if it equals
+  an entry or is a subdomain of it.
+- **Write URL patterns in the policy with the slash after the host.** `allowed_resources`
+  patterns are plain prefixes: `https://api.example.com*` also matches
+  `https://api.example.com.evil.net/` and `https://api.example.com:8443/`. Use
+  `https://api.example.com/*` (or `/v1/*`). `tempus install-policy` prints a WARNING for
+  `http(s)://host*` patterns without that slash.
+- **Ports are not restricted** by the policy prefix nor by the allowlist (`:8443` on an
+  allowed host is allowed). Pin the port in the policy pattern if it matters.
+- The executor sends exactly the URL the policy matched, with no whitespace, control
+  characters, backslashes or credentials in it.
 
 ### 3. Slack Executor (`tempus-slack-executor`)
 Dispatches channel alerts and notifications while isolating `SLACK_BOT_TOKEN`:

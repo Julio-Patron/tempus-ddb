@@ -789,6 +789,24 @@ def _find_placeholders(node, path="$"):
     return found
 
 
+def _find_prefix_url_patterns(spec):
+    """`allowed_resources` URL prefixes with no `/` between the host and the `*`.
+
+    Patterns are plain prefixes: `https://api.example.com*` also matches
+    `https://api.example.com.evil.net/` and `https://api.example.com:8443/`.
+    """
+    constraints = spec.get("constraints") if isinstance(spec, dict) else None
+    patterns = constraints.get("allowed_resources") if isinstance(constraints, dict) else []
+    found = []
+    for pattern in patterns if isinstance(patterns, list) else []:
+        if not isinstance(pattern, str) or not pattern.endswith("*"):
+            continue
+        scheme, separator, rest = pattern.partition("://")
+        if separator and scheme in ("http", "https") and "/" not in rest[:-1]:
+            found.append(pattern)
+    return found
+
+
 def run_install_policy(args):
     """Install a signed deterministic policy and make it active for its tenant."""
     try:
@@ -818,6 +836,15 @@ def run_install_policy(args):
                 file=sys.stderr,
             )
             sys.exit(1)
+        for pattern in _find_prefix_url_patterns(json.loads(spec)):
+            print(
+                f"WARNING: allowed_resources pattern '{pattern}' has no '/' after the "
+                "host, so it is a plain prefix that also matches other hosts "
+                "(https://api.example.com.evil.net/) and ports. Name the host and add "
+                "the slash (e.g. 'https://api.example.com/*') and pin the hosts with the "
+                "executor's --allowed-domains.",
+                file=sys.stderr,
+            )
         print(json.dumps(json.loads(_gate(args).install_policy(spec)), indent=2))
     except Exception as exc:
         print(f"[ERROR] Policy installation failed: {exc}", file=sys.stderr)

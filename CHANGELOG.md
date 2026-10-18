@@ -46,6 +46,22 @@
 - Limit: minor units always assume two decimals; currencies with other exponents (JPY, BHD)
   need the policy limit expressed with that in mind.
 
+### Security: the HTTP executor fails closed (forge 5)
+- **H1: credentials without an allowlist.** A policy prefix written without the slash after
+  the host (`https://api.example.com*`) also matches `https://api.example.com.evil.net/`, and
+  an executor with an `Authorization` header but no `allowed_domains` connected there and sent
+  the secret; the README example of `tempus-http-executor` was exactly that configuration.
+  Now `HttpActionAdapter` (and therefore `tempus-http-executor`) refuses to start, with a
+  clear message and no traceback, when an auth header (argument, `--auth-header` or
+  `HTTP_EXECUTOR_AUTH_HEADER`) has no non-empty domain allowlist; `*` is the explicit way to
+  accept every host. The CLI builds the adapter before it touches the permit, so a refusal
+  consumes nothing. **Breaking** for setups that passed an auth header without domains.
+- `tempus install-policy` prints a WARNING (it still installs) for `allowed_resources` URL
+  patterns of the form `http(s)://host*` with no `/` between the host and the `*`.
+- README: the executor example now pins `--allowed-domains`, and the prefix warning lives next
+  to it. Informational (documented in the README): ports are not restricted by the policy
+  prefix or the allowlist (H4).
+
 ### Security: audit of "the policy/validation reads X, the executor uses Y"
 Every field an executor uses was traced to what the policy (or the executor's own check)
 evaluates. Policy evaluates: `tenant_id`, `action_type`, `resource` (textual patterns),
