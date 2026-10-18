@@ -64,7 +64,9 @@ class MockPaymentTransport:
         }
 
 
-_DECIMAL_AMOUNT = re.compile(r"(\d+)(?:\.(\d{1,2}))?")
+# ASCII digits only (`\d` would take any Unicode digit); same grammar as the gate's
+# `parse_minor_units`: a `.` needs one or two digits, and minor units fit in a u64.
+_DECIMAL_AMOUNT = re.compile(r"([0-9]+)(?:\.([0-9]{1,2}))?")
 _U64_MAX = 2**64 - 1
 
 
@@ -108,9 +110,14 @@ def canonical_money(money: Dict[str, Any]) -> Tuple[str, str]:
             raise PaymentExecutorError(
                 "money.amount must be an unsigned decimal with at most two fractional digits"
             )
-        from_text = int(match.group(1)) * 100 + int(
+        whole = match.group(1).lstrip("0") or "0"
+        if len(whole) > 20:  # also keeps int() away from absurdly long digit strings
+            raise PaymentExecutorError("money.amount is too large")
+        from_text = int(whole) * 100 + int(
             (match.group(2) or "").ljust(2, "0")
         )
+        if from_text > _U64_MAX:
+            raise PaymentExecutorError("money.amount is too large")
     if from_text is not None and minor is not None and from_text != minor:
         raise PaymentExecutorError(
             f"money.amount ({from_text} minor units) and money.amount_minor ({minor}) disagree"

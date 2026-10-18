@@ -1,4 +1,4 @@
-"""N5-1: the gate and the payment executor accept exactly the same `money.amount` strings.
+"""N5-1/N5-2: the gate and the payment executor accept exactly the same `money.amount` strings.
 
 If the gate allows what the executor then refuses, the single-use permit is consumed and
 the receipt is FAILED (the gate used to accept "5.", the executor refuses it). The cases
@@ -12,6 +12,7 @@ import pytest
 from tempus_ddb.payment_executor import (
     PaymentActionAdapter,
     PaymentExecutorError,
+    canonical_money,
 )
 from test_money_binding import RecordingTransport, _intent, _world
 
@@ -22,6 +23,7 @@ AMOUNTS_BOTH_ACCEPT = [
     "5.5",
     "5.50",
     "05.00",
+    "0" * 5000 + "5.00",
     "000",
     "25.00",
     "10000.00",
@@ -50,8 +52,18 @@ AMOUNTS_BOTH_REFUSE = [
 ]
 
 
-# N5-2 (Unicode digits, u64 cap) cases are added with their own commit.
-UNICODE_AND_CAP = []
+# N5-2: Python's `\d` and `int()` accept any Unicode digit, and Python ints have no u64 cap.
+UNICODE_AND_CAP = [
+    "\u0663",  # ARABIC-INDIC DIGIT THREE
+    "\u0661\u0662\u0663",
+    "\uff15",  # FULLWIDTH DIGIT FIVE
+    "5.\u0665",
+    "\u0665.00",
+    "184467440737095516.16",  # u64::MAX + 1 minor unit
+    "99999999999999999999",
+    "9" * 5000,
+    "99999999999999999999999999.99",
+]
 
 
 def _gate_verdict(gate, agent_id, agent_key, key, money):
@@ -87,3 +99,13 @@ def test_gate_and_executor_agree_on_every_amount_spelling(amount, accepted):
         gate_verdict = _gate_verdict(gate, agent_id, agent_key, "k-amount", money)
     assert gate_verdict == accepted, f"gate on {amount!r}"
     assert _executor_verdict(money) == accepted, f"executor on {amount!r}"
+
+
+def test_canonical_money_caps_minor_units_at_u64_like_the_gate():
+    assert canonical_money({"amount": "184467440737095516.15", "asset": "USD"})[0] == (
+        "184467440737095516.15"
+    )
+    with pytest.raises(PaymentExecutorError):
+        canonical_money({"amount": "184467440737095516.16", "asset": "USD"})
+    with pytest.raises(PaymentExecutorError):
+        canonical_money({"amount": "\u0665", "asset": "USD"})

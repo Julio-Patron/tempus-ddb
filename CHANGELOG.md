@@ -60,6 +60,11 @@
   Still open: a *missing* beneficiary passes the gate when `allowed_beneficiaries` is not
   constrained (the field is generic to `money`), and the payment executor then refuses it.
 
+- **N5-2: Python `canonical_money`.** It used `\d` (any Unicode digit: `"٣"`, `"５"`) and had no
+  u64 cap, while the gate reads ASCII `0-9` only and caps minor units at u64. It now uses
+  `[0-9]`, refuses more than `u64::MAX` minor units (and absurdly long digit strings) with
+  `money.amount is too large`. The parity test also covers these spellings.
+
 ### Security: the HTTP executor fails closed (forge 5)
 - **H1: credentials without an allowlist.** A policy prefix written without the slash after
   the host (`https://api.example.com*`) also matches `https://api.example.com.evil.net/`, and
