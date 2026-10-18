@@ -294,6 +294,10 @@ fn validate_intent(value: &Value, expected_agent: &str) -> Result<IntentFields, 
         if !money.is_null() && !money.is_object() {
             return Err("TEMPUS_INVALID_CONTRACT: money must be an object or null".to_string());
         }
+        if money.is_object() {
+            // The same reading the policy evaluates and the executors use.
+            crate::phase3::validate_money(money)?;
+        }
     }
     Ok(IntentFields {
         tenant_id,

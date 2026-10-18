@@ -753,22 +753,71 @@ fn pattern_list<'a>(value: Option<&'a Value>, field: &str) -> Result<Vec<&'a str
         .collect()
 }
 
+/// The one reading of an intent's `money` that the policy evaluates and the executors use.
+///
+/// Amounts are minor units with two decimals. `amount` (decimal string) and `amount_minor`
+/// (unsigned integer) are two spellings of one value, and `currency` and `asset` are two
+/// names for one field: if both spellings are present they must agree, and a field of the
+/// wrong type is an error rather than being skipped. Otherwise the policy could evaluate
+/// one spelling while an executor sent the other (`amount: "99999.00", amount_minor: 1`).
+pub(crate) fn validate_money(money: &Value) -> Result<(u64, String), String> {
+    let name = |field: &str| -> Result<Option<&str>, String> {
+        match money.get(field) {
+            None => Ok(None),
+            Some(Value::String(value)) if !value.is_empty() => Ok(Some(value.as_str())),
+            Some(_) => Err(format!(
+                "TEMPUS_INVALID_CONTRACT: money.{field} must be a non-empty string"
+            )),
+        }
+    };
+    let currency = match (name("currency")?, name("asset")?) {
+        (Some(currency), Some(asset)) if currency != asset => {
+            return Err(
+                "TEMPUS_INVALID_CONTRACT: money.currency and money.asset must be the same value"
+                    .to_string(),
+            )
+        }
+        (Some(value), _) | (None, Some(value)) => value.to_string(),
+        (None, None) => return Err("TEMPUS_INVALID_CONTRACT: money.asset is required".to_string()),
+    };
+    let from_text = match money.get("amount") {
+        None => None,
+        Some(Value::String(text)) => Some(parse_minor_units(text)?),
+        Some(_) => {
+            return Err(
+                "TEMPUS_INVALID_CONTRACT: money.amount must be a decimal string".to_string(),
+            )
+        }
+    };
+    let from_minor = match money.get("amount_minor") {
+        None => None,
+        Some(value) => Some(value.as_u64().ok_or_else(|| {
+            "TEMPUS_INVALID_CONTRACT: money.amount_minor must be an unsigned integer".to_string()
+        })?),
+    };
+    let amount = match (from_text, from_minor) {
+        (Some(text), Some(minor)) if text != minor => {
+            return Err(format!(
+                "TEMPUS_INVALID_CONTRACT: money.amount ({text} minor units) and \
+                 money.amount_minor ({minor}) disagree"
+            ))
+        }
+        (Some(value), _) | (None, Some(value)) => value,
+        (None, None) => {
+            return Err(
+                "TEMPUS_INVALID_CONTRACT: money.amount must be a decimal string".to_string(),
+            )
+        }
+    };
+    Ok((amount, currency))
+}
+
 fn money_allowed(
     constraints: &serde_json::Map<String, Value>,
     money: &Value,
 ) -> Result<bool, String> {
-    let currency = money
-        .get("currency")
-        .or_else(|| money.get("asset"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| "TEMPUS_INVALID_CONTRACT: money.asset is required".to_string())?;
-    let amount = if let Some(amount) = money.get("amount_minor").and_then(Value::as_u64) {
-        amount
-    } else {
-        parse_minor_units(money.get("amount").and_then(Value::as_str).ok_or_else(|| {
-            "TEMPUS_INVALID_CONTRACT: money.amount must be a decimal string".to_string()
-        })?)?
-    };
+    let (amount, currency) = validate_money(money)?;
+    let currency = currency.as_str();
     if let Some(currencies) = constraints.get("allowed_currencies") {
         if !matches_patterns(Some(currencies), currency)? {
             return Ok(false);
@@ -1198,6 +1247,41 @@ fn base64_value(byte: u8) -> Option<u8> {
 mod tests {
     use super::*;
     use rand::rngs::OsRng;
+
+    #[test]
+    fn money_has_one_reading_for_policy_and_executors() {
+        let ok = |money: Value| validate_money(&money).unwrap();
+        assert_eq!(
+            ok(json!({"amount": "25.5", "asset": "USD"})),
+            (2550, "USD".into())
+        );
+        assert_eq!(
+            ok(json!({"amount_minor": 2550, "currency": "USD"})),
+            (2550, "USD".into())
+        );
+        assert_eq!(
+            ok(json!({"amount": "25.50", "amount_minor": 2550, "currency": "USD", "asset": "USD"})),
+            (2550, "USD".into())
+        );
+        for money in [
+            json!({"amount": "99999.00", "amount_minor": 1, "asset": "USD"}),
+            json!({"amount": "1.00", "currency": "USD", "asset": "EUR"}),
+            json!({"amount": "1.00", "currency": "USD", "asset": "usd"}),
+            json!({"amount": "1.00", "amount_minor": "100", "asset": "USD"}),
+            json!({"amount": "1.00", "amount_minor": -100, "asset": "USD"}),
+            json!({"amount": 1, "amount_minor": 100, "asset": "USD"}),
+            json!({"amount": "1.00", "currency": 1, "asset": "USD"}),
+            json!({"amount": "1.00", "asset": ""}),
+            json!({"asset": "USD"}),
+            json!({"amount": "1.00"}),
+        ] {
+            let error = validate_money(&money).unwrap_err();
+            assert!(
+                error.starts_with("TEMPUS_INVALID_CONTRACT"),
+                "{money}: {error}"
+            );
+        }
+    }
 
     struct TestRemoteSigner {
         identity: SignerIdentity,

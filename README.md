@@ -581,7 +581,7 @@ tempus-slack-executor \
 ```
 
 ### 4. Pluggable Financial Adapter (`tempus-payment-executor`)
-Reference pluggable executor that enforces the universal `money` envelope (`amount`, `asset`, `beneficiary`) and minor-unit limits with credential isolation:
+Reference pluggable executor that enforces the universal `money` envelope (`amount` or `amount_minor`, `asset` or `currency`, `beneficiary`; fields that disagree are refused) and minor-unit limits with credential isolation:
 - Supported actions: `finance.disburse`, `finance.transfer`, `payment.charge`.
 - **Bring Your Own Provider:** Implements a pluggable `PaymentTransport` interface. Shipped with a deterministic mock transport for verification and testing; plug in your real Stripe/Wise API client at the transport boundary without exposing payment keys to the AI agent.
 
@@ -812,7 +812,7 @@ for earlier versions can hit `NON_EXACT_NUMBER` (the message names the path, for
 | What you send | Result | Fix |
 | --- | --- | --- |
 | `requested_at` from `time.time()` (a float, seconds) | `NON_EXACT_NUMBER ... $.requested_at` | An integer in microseconds: `time.time_ns() // 1000` |
-| `money.amount` as a number (`25.5`) | `NON_EXACT_NUMBER ... $.money.amount`; an integer (`25`) gives `money.amount must be a decimal string` | A string with at most two decimals: `"25.50"` (or an integer `amount_minor` in minor units) |
+| `money.amount` as a number (`25.5`) | `NON_EXACT_NUMBER ... $.money.amount`; an integer (`25`) gives `money.amount must be a decimal string` | A string with at most two decimals: `"25.50"` (or an integer `amount_minor` in minor units; if you send both, or both `currency` and `asset`, they must agree or the intent is refused with `TEMPUS_INVALID_CONTRACT`) |
 | A float in `input` (`{"price": 19.99}`) | `NON_EXACT_NUMBER ... $.input.price` (it used to produce a signed `BLOCKED`) | A string (`"19.99"`) or an integer in minor units (`1999`) |
 | A decimal in agent `metadata`, a policy or an outcome `output` | `NON_EXACT_NUMBER` at its path | A string (`"0.5"`); policy limits such as `max_money_amount_minor` are already integers |
 | `NaN`, `Infinity`, `1e400` or `-0` from the CLI | `NON_EXACT_NUMBER` | Send a string, or write `0` for `-0` |

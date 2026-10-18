@@ -21,6 +21,31 @@
   from the clone until a release includes default-deny and independent verification (PyPI
   0.5.3 does not). Fixed the demo link that lacked `https://`.
 
+### Security: the policy and the executors read the same money fields
+- **A mismatch between what the policy evaluated and what the payment executor sent let an
+  agent bypass the amount limit and the currency list** (present since the policy engine,
+  5e6b165). The policy read `money.amount_minor` and `money.currency` when present; the
+  executor sent `money.amount` and `money.asset`. With a limit of 10000.00 USD,
+  `{"amount":"99999.00","amount_minor":1,"asset":"USD"}` was `ALLOWED` and the transport
+  received `99999.00`; `{"amount":"1.00","currency":"USD","asset":"EUR"}` passed a USD-only
+  list and the transport received `EUR`. Both bundles verified.
+- Now `money` has one canonical reading (`phase3::validate_money`), used by the gate when
+  it receives an intent, by the policy evaluation (also re-run by executors before they
+  consume a permit and by the verifiers) and by the payment executor:
+  - `amount` (decimal string, at most two decimals) and `amount_minor` (unsigned integer)
+    are two spellings of one value; `currency` and `asset` are two names of one field. If
+    both spellings are present they must be equal, otherwise the intent is refused with
+    `TEMPUS_INVALID_CONTRACT` and nothing is signed (the same treatment as any other
+    invalid intent). A field of the wrong type (`amount_minor: "1"`, `-1`, `currency: 1`) is
+    an error instead of being skipped.
+  - One spelling is enough: `{"amount_minor": 2500, "currency": "USD"}` works, and the
+    payment executor sends `"25.00"` / `"USD"` derived from it.
+  - Old permits and bundles with disagreeing fields no longer execute or verify: the
+    verifiers report `INVALID` (checked with a bundle signed by the previous gate).
+  - Principle: an executor never uses a field the policy did not evaluate.
+- Limit: minor units always assume two decimals; currencies with other exponents (JPY, BHD)
+  need the policy limit expressed with that in mind.
+
 ### Security: verifier hardening (independent forge findings)
 - **Duplicate JSON keys are INVALID.** `serde_json` kept the last value of a repeated key
   (`"amount":"9999.00","amount":"25.00"` verified), so a document could verify while a
