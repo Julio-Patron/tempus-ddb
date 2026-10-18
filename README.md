@@ -601,6 +601,11 @@ tempus-http-executor \
 ### 3. Slack Executor (`tempus-slack-executor`)
 Dispatches channel alerts and notifications while isolating `SLACK_BOT_TOKEN`:
 - Supported actions: `slack.post_message`, `slack.send_alert`.
+- The permit `resource` is the channel and must be **exactly one**: an ID (`C`, `G` or `D` +
+  uppercase letters/digits, e.g. `C0123ABCD`) or a `#channel-name` (lowercase letters, digits,
+  `-`, `_`). Slack reads a comma-separated `channel` as several, so `C0123,C9999` is rejected
+  (`TEMPUS_SLACK_BINDING_REJECTED`) before anything is sent. Policy patterns such as `C0123*`
+  are textual prefixes: prefer exact channels in `allowed_resources`.
 
 ```bash
 tempus-slack-executor \

@@ -81,6 +81,13 @@
   any segment is `.` or `..` (also `..;x`), or if it contains a backslash. Same rule the
   GitHub executor already had.
 
+- **S1: Slack channel.** `resource` went to Slack as `channel` unvalidated; with the policy
+  `C0123*`, `C0123,C9999` and `#alerts,#general` were sent to several conversations. The
+  executor now accepts only one channel ID (`[CGD][A-Z0-9]{2,31}`) or `#name`
+  (`[a-z0-9][a-z0-9_-]{0,79}`) and answers `FAILED` / `TEMPUS_SLACK_BINDING_REJECTED` with a
+  clear message, without calling Slack, for anything else (commas, spaces, newlines, Unicode
+  look-alikes, non-strings).
+
 ### Security: audit of "the policy/validation reads X, the executor uses Y"
 Every field an executor uses was traced to what the policy (or the executor's own check)
 evaluates. Policy evaluates: `tenant_id`, `action_type`, `resource` (textual patterns),

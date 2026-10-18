@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from typing import Any, Dict, Optional, Protocol, Set
 from urllib import error, request
 
@@ -11,6 +12,18 @@ from .executor_runtime import (
     ExecutionResult,
     ExecutorRuntime,
 )
+
+# One conversation: a Slack ID (public C, private/group G, direct message D) or a #name
+# (lowercase letters, digits, `-` and `_`). `resource` is sent as `channel`, which Slack
+# also reads as a comma-separated list, so commas, spaces and everything else are refused.
+_CHANNEL_ID = re.compile(r"[CGD][A-Z0-9]{2,31}", re.ASCII)
+_CHANNEL_NAME = re.compile(r"#[a-z0-9][a-z0-9_-]{0,79}", re.ASCII)
+
+
+def _valid_channel(channel: Any) -> bool:
+    return isinstance(channel, str) and bool(
+        _CHANNEL_ID.fullmatch(channel) or _CHANNEL_NAME.fullmatch(channel)
+    )
 
 
 class SlackExecutorError(RuntimeError):
@@ -84,6 +97,19 @@ class SlackActionAdapter:
             raise SlackExecutorError("SLACK_BOT_TOKEN must be provided to the executor")
 
         channel = intent.get("resource")
+        if not _valid_channel(channel):
+            return ExecutionResult(
+                status="FAILED",
+                payload={
+                    "error_code": "TEMPUS_SLACK_BINDING_REJECTED",
+                    "message": (
+                        "Slack resource must be exactly one channel: an ID such as "
+                        "C0123ABCD (C, G or D + uppercase letters/digits) or a "
+                        "#channel-name (lowercase letters, digits, - and _), "
+                        "without commas or spaces"
+                    ),
+                },
+            )
         input_data = intent.get("input", {})
         text = input_data.get("text") or input_data.get("message")
         if not text:
