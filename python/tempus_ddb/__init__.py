@@ -16,7 +16,7 @@ Core Components:
 - SlackExecutorAdapter / SlackActionAdapter: Credential-isolated Slack message executor.
 - PaymentExecutorAdapter / PaymentActionAdapter: Financial disburse/transfer executor with money envelope.
 - gen_keys: Utility to generate Ed25519 key pairs.
-- verify_receipt / verify_checkpoint: Independent verification with a pinned gate public key (no database).
+- verify_receipt / verify_bundle / verify_checkpoint: Independent verification with a pinned gate public key (no database).
 - main_sync: Entry point for the MCP server.
 
 Typical usage:
@@ -32,6 +32,7 @@ from ._tempus_ddb import (
     TempusDDB,
     TempusExecutor,
     gen_keys,
+    verify_bundle,
     verify_checkpoint,
     verify_receipt,
 )
@@ -69,6 +70,7 @@ __all__ = [
     "__version__",
     "gen_keys",
     "main_sync",
+    "verify_bundle",
     "verify_checkpoint",
     "verify_receipt",
 ]

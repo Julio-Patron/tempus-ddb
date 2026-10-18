@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -8,7 +9,13 @@ import time
 import warnings
 
 from . import __version__
-from ._tempus_ddb import TempusDDB, gen_keys, verify_checkpoint, verify_receipt
+from ._tempus_ddb import (
+    TempusDDB,
+    gen_keys,
+    verify_bundle,
+    verify_checkpoint,
+    verify_receipt,
+)
 from .mcp_server import main_sync
 
 # --- Default paths (used when global args are not provided) ---
@@ -569,6 +576,60 @@ def run_verify_receipt(args):
     _print_verification(result)
 
 
+def run_export_bundle(args):
+    """Write one action as a self-contained evidence bundle (no private keys)."""
+    db_path, keyfile = _resolve_paths(args)
+    try:
+        if os.path.exists(args.out) and not args.force:
+            raise ValueError(f"{args.out} already exists (use --force to overwrite)")
+        db = TempusDDB(db_path, keyfile)
+        if args.create_checkpoint:
+            trace = json.loads(db.get_trace(args.action_id))
+            tenant = trace["authorization"]["authorization"]["tenant_id"]
+            db.create_checkpoint(tenant)
+        bundle = db.export_bundle(args.action_id, args.max_stream_events)
+        with open(args.out, "w", encoding="utf-8") as handle:
+            handle.write(bundle)
+        has_checkpoint = json.loads(bundle).get("checkpoint") is not None
+        print(
+            json.dumps(
+                {
+                    "schema_version": "tempus.evidence-bundle.v1",
+                    "action_id": args.action_id,
+                    "out": args.out,
+                    "bytes": len(bundle.encode("utf-8")),
+                    "sha256": hashlib.sha256(bundle.encode("utf-8")).hexdigest(),
+                    "checkpoint_included": has_checkpoint,
+                },
+                indent=2,
+            )
+        )
+        if not has_checkpoint:
+            print(
+                "NOTE: no checkpoint in the bundle (none covers this action yet, or "
+                "its stream exceeds --max-stream-events): ledger inclusion cannot be "
+                "shown. Re-run with --create-checkpoint to include one.",
+                file=sys.stderr,
+            )
+    except Exception as exc:
+        print(f"[ERROR] Bundle export failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def run_verify_bundle(args):
+    """Verify an evidence bundle without a database, against a pinned gate key."""
+    try:
+        gate_key, executors = _pinned_keys(args)
+        if gate_key is None:
+            raise ValueError("--gate-public-key is required")
+        bundle = _read_text_argument(args.bundle, "bundle")
+        result = verify_bundle(bundle, gate_key, executors or None)
+    except Exception as exc:
+        print(f"[ERROR] Bundle verification failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+    _print_verification(result)
+
+
 def _gate(args):
     db_path, keyfile = _resolve_paths(args)
     return TempusDDB(db_path, keyfile)
@@ -1080,6 +1141,40 @@ def main():
     )
     _add_pin_arguments(verify_receipt_p, required=True)
 
+    export_bundle_p = subparsers.add_parser(
+        "export-bundle",
+        help="Export one action as a single self-contained evidence bundle "
+        "(trace, signed policy, checkpoint if any; no private keys)",
+    )
+    export_bundle_p.add_argument("--action-id", required=True)
+    export_bundle_p.add_argument("--out", required=True, help="Bundle file to write")
+    export_bundle_p.add_argument(
+        "--create-checkpoint",
+        action="store_true",
+        help="Sign a fresh checkpoint for the tenant first so the bundle can show "
+        "ledger inclusion (needs the gate key)",
+    )
+    export_bundle_p.add_argument(
+        "--max-stream-events",
+        type=int,
+        default=None,
+        help="Omit the checkpoint if its event stream is larger than this "
+        "(default 10000)",
+    )
+    export_bundle_p.add_argument(
+        "--force", action="store_true", help="Overwrite an existing --out file"
+    )
+
+    verify_bundle_p = subparsers.add_parser(
+        "verify-bundle",
+        help="Verify an evidence bundle with no database, against a pinned gate "
+        "public key",
+    )
+    verify_bundle_p.add_argument(
+        "--bundle", required=True, help="Bundle JSON file (or '-' for stdin)"
+    )
+    _add_pin_arguments(verify_bundle_p, required=True)
+
     # checkpoint subcommands
     chk_parser = subparsers.add_parser(
         "checkpoint", help="Cryptographic checkpoint and event stream operations"
@@ -1176,6 +1271,10 @@ def main():
             run_trace(args, verify=True)
         elif args.command == "verify-receipt":
             run_verify_receipt(args)
+        elif args.command == "export-bundle":
+            run_export_bundle(args)
+        elif args.command == "verify-bundle":
+            run_verify_bundle(args)
         elif args.command == "checkpoint":
             run_checkpoint(args)
         elif args.command is None:

@@ -10,7 +10,13 @@ import time
 from pathlib import Path
 
 import pytest
-from tempus_ddb import TempusDDB, gen_keys, verify_checkpoint, verify_receipt
+from tempus_ddb import (
+    TempusDDB,
+    gen_keys,
+    verify_bundle,
+    verify_checkpoint,
+    verify_receipt,
+)
 from test_cli import run_cli
 
 TENANT = "indep-test"
@@ -348,3 +354,189 @@ def test_python_api_pinned_verification(worlds):
     assert result["status"] == "INVALID"
     with pytest.raises(RuntimeError):
         verify_checkpoint("{}", "[]", "zz")
+
+
+# ---- evidence bundles -------------------------------------------------------
+
+
+def _export(world, name, *extra):
+    out = world["root"] / name
+    code, stdout, stderr = run_cli(
+        ["export-bundle", "--action-id", world["action_id"], "--out", str(out), *extra],
+        cwd=world["root"],
+    )
+    return code, stdout, stderr, out
+
+
+def _verify_bundle(path, key, cwd, *extra):
+    return run_cli(
+        ["verify-bundle", "--bundle", str(path), "--gate-public-key", key, *extra],
+        cwd=cwd,
+    )
+
+
+def test_bundle_without_checkpoint_exports_and_verifies_offline(tmp_path):
+    real = make_world(tmp_path, "fresh")  # no checkpoint exists yet
+    code, out, err, path = _export(real, "plain.bundle.json")
+    assert code == 0, out + err
+    summary = json.loads(out)
+    assert summary["schema_version"] == "tempus.evidence-bundle.v1"
+    assert summary["checkpoint_included"] is False
+    assert "--create-checkpoint" in err
+    # Copy the single file to an empty directory: no DB, no keys.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    copy_path = empty / "bundle.json"
+    copy_path.write_text(path.read_text())
+    code, out, err = _verify_bundle(copy_path, real["gate"], empty)
+    assert code == 0, out + err
+    result = json.loads(out)
+    assert result["status"] == "VERIFIED" and result["kind"] == "bundle"
+    assert result["checks"]["checkpoint"] == "NOT_PRESENT"
+    assert any("LEDGER_INCLUSION" in item for item in result["trust"]["not_checked"])
+    assert sorted(p.name for p in empty.iterdir()) == ["bundle.json"]
+
+
+def test_bundle_with_checkpoint_verifies_ledger_inclusion(worlds, tmp_path):
+    real, _ = worlds
+    code, out, err, path = _export(real, "chk.bundle.json", "--create-checkpoint")
+    assert code == 0, out + err
+    assert json.loads(out)["checkpoint_included"] is True
+    code, out, err = _verify_bundle(
+        path,
+        real["gate"],
+        tmp_path,
+        "--executor-public-key",
+        real["executor"],
+    )
+    assert code == 0, out + err
+    result = json.loads(out)
+    assert result["checks"] == {
+        "authorization": "VERIFIED",
+        "execution": "VERIFIED",
+        "checkpoint": "VERIFIED",
+    }
+    # Refuses to clobber existing evidence unless --force.
+    code, _, err, _ = _export(real, "chk.bundle.json")
+    assert code == 1 and "already exists" in err
+    code, _, err, _ = _export(real, "chk.bundle.json", "--force")
+    assert code == 0, err
+
+
+def test_bundle_oversized_stream_is_omitted(worlds):
+    real, _ = worlds
+    code, out, err, path = _export(
+        real, "small.bundle.json", "--create-checkpoint", "--max-stream-events", "1"
+    )
+    assert code == 0, out + err
+    assert json.loads(out)["checkpoint_included"] is False
+    assert json.loads(path.read_text())["checkpoint"] is None
+
+
+def test_forged_database_bundle_is_invalid_with_the_real_key(worlds, tmp_path):
+    real, forged = worlds
+    code, out, err, path = _export(forged, "forged.bundle.json", "--create-checkpoint")
+    assert code == 0, out + err
+    code, out, _ = _verify_bundle(path, real["gate"], tmp_path)
+    assert code == 2
+    errors = json.loads(out)["errors"]
+    assert "GATE_KEY_NOT_PINNED" in errors
+    assert "CHECKPOINT_ERR_UNTRUSTED_SIGNER" in errors
+    # It is only consistent for the attacker's own key.
+    code, out, _ = _verify_bundle(path, forged["gate"], tmp_path)
+    assert code == 0 and json.loads(out)["status"] == "VERIFIED"
+
+
+def test_bundle_wrong_keys_and_bad_usage(worlds, tmp_path):
+    real, forged = worlds
+    code, out, err, path = _export(real, "keys.bundle.json", "--create-checkpoint")
+    assert code == 0, out + err
+    code, out, _ = _verify_bundle(path, forged["gate"], tmp_path)
+    assert code == 2 and json.loads(out)["status"] == "INVALID"
+    code, out, _ = _verify_bundle(
+        path, real["gate"], tmp_path, "--executor-public-key", forged["executor"]
+    )
+    assert code == 2 and "EXECUTOR_KEY_NOT_PINNED" in json.loads(out)["errors"]
+    code, _, err = _verify_bundle(path, "not-a-key", tmp_path)
+    assert code == 1 and "64 hex" in err
+    code, _, err = run_cli(["verify-bundle", "--bundle", str(path)], cwd=tmp_path)
+    assert code == 2 and "--gate-public-key" in err  # argparse: required
+    code, _, err = _verify_bundle(tmp_path / "missing.json", real["gate"], tmp_path)
+    assert code == 1 and "not found" in err
+    not_a_bundle = tmp_path / "x.json"
+    not_a_bundle.write_text("{}")
+    code, _, err = _verify_bundle(not_a_bundle, real["gate"], tmp_path)
+    assert code == 1 and "SCHEMA_UNKNOWN" in err
+
+
+def _set(doc, path, value):
+    node = doc
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = value
+
+
+@pytest.mark.parametrize(
+    "path,value",
+    [
+        (["trace", "authorization", "intent", "money", "amount"], "9999.00"),
+        (["trace", "authorization", "authorization", "decision"], "BLOCKED"),
+        (
+            [
+                "trace",
+                "authorization",
+                "policy_bundle",
+                "constraints",
+                "max_ttl_seconds",
+            ],
+            9,
+        ),
+        (["trace", "authorization", "agent_signature"], "00" * 64),
+        (["trace", "execution", "outcome", "status"], "FAILED"),
+        (["trace", "execution", "outcome", "external_reference"], "tx-forged"),
+        (["trace", "execution", "receipt", "status"], "FAILED"),
+        (["trace", "action_id"], "00"),
+        (["action_id"], "00"),
+        (["checkpoint", "checkpoint", "stream_root_hash"], "00" * 32),
+        (["checkpoint", "checkpoint", "signature"], "00" * 64),
+        (["checkpoint", "stream", 0, "payload_hash"], "00" * 32),
+    ],
+    ids=lambda v: ".".join(map(str, v)) if isinstance(v, list) else None,
+)
+def test_tampered_bundle_field_is_invalid(worlds, tmp_path, path, value):
+    real, _ = worlds
+    code, out, err, bundle_path = _export(
+        real, "tamper.bundle.json", "--create-checkpoint", "--force"
+    )
+    assert code == 0, out + err
+    bundle = json.loads(bundle_path.read_text())
+    _set(bundle, path, value)
+    tampered = tmp_path / "t.json"
+    tampered.write_text(json.dumps(bundle))
+    code, out, err = _verify_bundle(tampered, real["gate"], tmp_path)
+    assert code == 2, (path, out, err)
+    assert json.loads(out)["status"] == "INVALID"
+
+
+def test_bundle_contains_no_private_key_material(worlds):
+    real, _ = worlds
+    code, out, err, path = _export(real, "secrets.bundle.json", "--create-checkpoint")
+    assert code == 0, out + err
+    text = path.read_text()
+    assert "private_key" not in text
+    for name in ("keys.json", "agent.keys.json", "executor.keys.json"):
+        secret = json.loads((real["root"] / name).read_text())["private_key"]
+        assert len(secret) >= 64 and secret not in text
+    assert real["gate"] in text  # public identities are expected
+
+
+def test_python_api_bundle_roundtrip(worlds):
+    real, forged = worlds
+    db = TempusDDB(str(real["root"] / "tempus.db"), str(real["root"] / "keys.json"))
+    bundle = db.export_bundle(real["action_id"])
+    assert json.loads(verify_bundle(bundle, real["gate"]))["status"] == "VERIFIED"
+    assert json.loads(verify_bundle(bundle, forged["gate"]))["status"] == "INVALID"
+    with pytest.raises(RuntimeError):
+        verify_bundle(bundle, "zz")
+    with pytest.raises(RuntimeError):
+        db.export_bundle("no-such-action")
