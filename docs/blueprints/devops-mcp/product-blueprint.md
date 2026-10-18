@@ -12,7 +12,7 @@
 ## The Problem
 Modern autonomous agent runtimes—including **OpenClaw**, **Hermes Agent (Nous Research)**, **Cursor**, **Claude Desktop**, **Windsurf**, **OpenHands**, and **Aider**—interact with external environments through the Model Context Protocol (MCP) or custom function calling.
 
-Today, teams commonly expose MCP tools that directly open GitHub Pull Requests, merge code, or post alerts to Slack. If those MCP tools hold `GITHUB_TOKEN`, GitHub App private keys, or `SLACK_BOT_TOKEN` in the same memory space or process handling the agent:
+Today, teams commonly expose MCP tools that directly open GitHub Pull Requests, merge code, or post alerts to Slack. If those MCP tools hold `GITHUB_TOKEN` (a personal access token), or `SLACK_BOT_TOKEN` in the same memory space or process handling the agent:
 1. **Prompt Injection & Indirect Poisoning:** An agent reading an untrusted GitHub issue, pull request diff, or dependency manifest containing malicious hidden instructions can be tricked into exfiltrating data, opening backdoored PRs, or pinging unauthorized webhooks.
 2. **Hallucination & Infinite Loops:** A malfunctioning loop in an autonomous agent (e.g. OpenClaw or OpenHands running overnight) can spam dozens of duplicate PRs or flood internal Slack channels.
 3. **Ambient Authority:** The agent holds *ambient privilege*. Any tool call it generates is executed immediately by the MCP server without cryptographic verification of intent or policy compliance.
@@ -41,7 +41,7 @@ Introduce a cryptographic toll gate between the agent runtime and destructive/st
 
 1. **Intent Signing:** The agent signs its exact intended action (`github.create_pull_request`, target repo `acme/infrastructure`, branch, title, diff hash) using its local Ed25519 workload key.
 2. **Policy Evaluation & Single-Use Permit:** The Gate validates the intent against a deterministic, signed policy bundle (permitted repos, allowed branches, rate ceilings, approved executors). If valid, it mints an expiring, single-use signed permit.
-3. **Isolated MCP Execution:** An isolated executor process—which exclusively holds `GITHUB_TOKEN` or GitHub App credentials—validates and atomically consumes the permit. It executes the real write against GitHub.
+3. **Isolated MCP Execution:** An isolated executor process—which exclusively holds `GITHUB_TOKEN` (a personal access token; GitHub App credentials are not supported yet, see ROADMAP)—validates and atomically consumes the permit. It executes the real write against GitHub.
 4. **Tamper-Evident Receipts:** Gate and Executor dual-sign an immutable cryptographic receipt, stored in an append-only event stream verified offline.
 
 ---

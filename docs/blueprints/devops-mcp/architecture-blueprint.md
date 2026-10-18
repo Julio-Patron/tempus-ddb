@@ -111,7 +111,7 @@ Dual-signed by Gate and Executor upon completion:
 
 ## 🔒 Security Checklist for Production
 
-- [x] **Zero Credential Ambient Access:** `GITHUB_TOKEN`, RSA PEM private keys, and `SLACK_BOT_TOKEN` are present **only** in the executor environment, never in MCP client processes (Cursor, Claude, OpenClaw).
+- [x] **Zero Credential Ambient Access:** `GITHUB_TOKEN` and `SLACK_BOT_TOKEN` are present **only** in the executor environment, never in MCP client processes (Cursor, Claude, OpenClaw).
 - [x] **Redirect Protection:** the HTTP, GitHub and Slack executor transports share one opener (`tempus_ddb/_http.py`) that refuses every 3xx: the redirect is not followed, `Authorization` is not forwarded, and the executor reports a failed outcome naming only the status code and the redirect target host. Not covered: DNS-based SSRF (the HTTP executor rejects `localhost` and literal private/loopback IPs and applies an optional domain allowlist by name, but does not resolve names or pin addresses) and custom transports supplied by an integrator.
 - [ ] **Strict Installation Scoping (not implemented):** GitHub App installation tokens are not minted by the packaged executor; it uses the token you provide. Scope that token to the target repository and to `issues: write` / `pull_requests: write` yourself. A GitHub App deployment path is on the ROADMAP.
 - [x] **Replay Prevention:** A consumed permit cannot be reused: re-executing it is rejected (single-instance executor).
