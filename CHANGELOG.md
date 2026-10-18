@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Documentation
+- README / CHANGELOG: the duplicate-key check applies to *verified* documents, not to what
+  the gate receives (`parse_canonical`: the last value of a repeated key wins and only it is
+  signed), and a new section "Common cases that now break, and how to fix them" covers
+  `requested_at` from `time.time()`, numeric `money.amount`, floats in `input`, decimals in
+  metadata or policies, and `NaN`/`Infinity`/`-0` from the CLI.
 - Legacy ledger (`tempus record` / `tempus verify`, `TEMPUS_LEGACY_TOOLS=1`) is documented
   as **not verifiable evidence**: it accepts floats and huge integers and hashes the parsed
   value, so an edited copy (`1e2` -> `100.0`, `...890` -> `...891`) still validates. Decision:

@@ -752,7 +752,13 @@ Same exit codes as above (0 VERIFIED, 2 INVALID, 1 usage). Python:
 ### What VERIFIED means, and how strict it is
 
 - A document that repeats a JSON object key anywhere (`"amount":"9999.00","amount":"25.00"`)
-  is `INVALID` (`DUPLICATE_JSON_KEY`): parsers disagree on which value wins.
+  is `INVALID` (`DUPLICATE_JSON_KEY`): parsers disagree on which value wins. This check is
+  made when *verifying* documents. It is **not** made by the gate when it receives an
+  intent, outcome, policy or metadata (`parse_canonical`): there the last value of a repeated
+  key wins, and what is signed holds only that value (through the CLI, Python's `json.loads`
+  already collapses it before the gate sees it). So a repeated key cannot produce an
+  ambiguous signed document, but the gate will not tell the sender that its input was
+  ambiguous; do not generate JSON with repeated keys.
 - Fields outside the schema at the top level of a bundle, in its `trace` or in its
   `checkpoint` wrapper are `INVALID` (`UNKNOWN_FIELD (<path>)`): they would be unsigned
   text travelling inside a verified file.
@@ -796,6 +802,26 @@ What a pinned verification (receipt or bundle) does **not** show; the result lis
   stream exposes ids, types, timestamps and hashes (not contents) of every event of that
   tenant up to the checkpoint. Streams over `--max-stream-events` (default 10000) are
   omitted, not truncated.
+
+### Common cases that now break, and how to fix them
+
+Since signed documents may only hold integers in the i64/u64 range as numbers, code written
+for earlier versions can hit `NON_EXACT_NUMBER` (the message names the path, for example
+`$.requested_at`). The usual causes:
+
+| What you send | Result | Fix |
+| --- | --- | --- |
+| `requested_at` from `time.time()` (a float, seconds) | `NON_EXACT_NUMBER ... $.requested_at` | An integer in microseconds: `time.time_ns() // 1000` |
+| `money.amount` as a number (`25.5`) | `NON_EXACT_NUMBER ... $.money.amount`; an integer (`25`) gives `money.amount must be a decimal string` | A string with at most two decimals: `"25.50"` (or an integer `amount_minor` in minor units) |
+| A float in `input` (`{"price": 19.99}`) | `NON_EXACT_NUMBER ... $.input.price` (it used to produce a signed `BLOCKED`) | A string (`"19.99"`) or an integer in minor units (`1999`) |
+| A decimal in agent `metadata`, a policy or an outcome `output` | `NON_EXACT_NUMBER` at its path | A string (`"0.5"`); policy limits such as `max_money_amount_minor` are already integers |
+| `NaN`, `Infinity`, `1e400` or `-0` from the CLI | `NON_EXACT_NUMBER` | Send a string, or write `0` for `-0` |
+
+Custom executors do not need to convert their results: the packaged runtime records floats,
+huge integers, `Decimal` and `datetime` as strings, and a result it cannot represent in a
+degraded form, never as `FAILED` for an action that happened. Bundles signed by older
+versions that contain a float verify as `INVALID` (`AUTHORIZATION_NON_EXACT_NUMBER` /
+`EXECUTION_NON_EXACT_NUMBER`) even if untouched.
 
 ## Legacy ledger
 

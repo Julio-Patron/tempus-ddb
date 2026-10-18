@@ -12,6 +12,7 @@ whose output holds the float `0.1`, and one holding rounded huge integers.
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, Set
 
@@ -422,3 +423,46 @@ def test_cli_refuses_nan_infinity_overflow_and_negative_zero_as_non_exact(
     assert code == 1, f"{raw} was accepted: {out}{err}"
     assert "NON_EXACT_NUMBER" in err, err
     assert "must be valid JSON" not in err, err
+
+
+# ----------- docs: duplicate keys at the gate, and the common-breakage guide
+
+
+def test_readme_documents_gate_duplicate_keys_and_the_common_breakages():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "parse_canonical" in readme and "last value of a repeated" in readme
+    start = readme.index("### Common cases that now break, and how to fix them")
+    section = readme[start : readme.index("\n## ", start)]
+    for needle in (
+        "time.time_ns() // 1000",
+        "money.amount",
+        "$.input.price",
+        "metadata",
+    ):
+        assert needle in section, needle
+    unreleased = (
+        (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").split("\n## [", 2)[1]
+    )
+    assert "parse_canonical" in unreleased
+    assert "Common cases that now break" in unreleased
+
+
+def test_gate_keeps_the_last_value_of_a_repeated_key_as_documented():
+    """Pins the documented behaviour: the gate does not reject repeated keys on input."""
+    from tempus_ddb import TempusDDB
+    from test_independent_verify import TENANT, _pub
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        world = make_world(Path(tmpdir), "dup", execute=False)
+        root = world["root"]
+        agent_keys = root / "agent.keys.json"
+        db = TempusDDB(str(root / "tempus.db"), str(root / "keys.json"))
+        raw = (
+            '{"schema_version":"tempus.action-intent.v1","tenant_id":"%s","agent_id":"%s",'
+            '"idempotency_key":"dup-1","action_type":"purchase","resource":"vendor/a",'
+            '"resource":"vendor/b","requested_at":%d,"input":{},"money":{"amount":"9999.00",'
+            '"amount":"25.00","asset":"USD","beneficiary":"v-1"}}'
+        ) % (TENANT, _pub(agent_keys), time.time_ns() // 1000)
+        permit = json.loads(db.request_action(raw, str(agent_keys), 30))
+        assert permit["intent"]["resource"] == "vendor/b"
+        assert permit["intent"]["money"]["amount"] == "25.00"
