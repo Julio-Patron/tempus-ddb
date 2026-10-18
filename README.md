@@ -288,6 +288,71 @@ Policy evaluation is deterministic and rejects unknown constraints, floating-poi
 oversized input, tenant/resource/action mismatches, excessive TTL, disallowed executors,
 and money metadata outside the configured currency or minor-unit ceiling.
 
+## End-to-end from the CLI
+
+The whole B2A cycle without Python, continuing from the policy installed above (tenant
+`acme`, `agent.keys.json`, `executor.keys.json`). Run it in the directory where you ran
+`tempus init`.
+
+```bash
+# 1. The agent's signed intent. `requested_at` is microseconds since the Unix epoch.
+AGENT_PUB=$(python -c "import json; print(json.load(open('agent.keys.json'))['public_key'])")
+cat > intent.json <<EOF
+{
+  "schema_version": "tempus.action-intent.v1",
+  "tenant_id": "acme",
+  "agent_id": "$AGENT_PUB",
+  "idempotency_key": "issue-2026-001",
+  "action_type": "github.create_issue",
+  "resource": "acme/widgets",
+  "requested_at": $(python -c "import time; print(time.time_ns() // 1000)"),
+  "input": {"title": "Rotate the staging key", "body": "Opened through Tempus."}
+}
+EOF
+
+# 2. request-action: the gate evaluates the policy and prints the permit
+#    (`tempus.authorization-result.v1`, ALLOWED or a signed BLOCKED denial).
+#    This file is the `permit.json` the packaged executors consume.
+tempus request-action --intent intent.json --agent-keyfile agent.keys.json \
+  --ttl-seconds 60 > permit.json
+AUTH_ID=$(python -c "import json; print(json.load(open('permit.json'))['authorization']['authorization_id'])")
+ACTION_ID=$(python -c "import json; print(json.load(open('permit.json'))['authorization']['action_id'])")
+python -c "import json; print(json.load(open('permit.json'))['authorization']['decision'])"   # ALLOWED
+
+# 3. The executor performs the effect (see "Packaged Mediated Executors"), then the
+#    outcome it reports is committed to the gate, signed with the executor key.
+#    Here the outcome is written by hand to keep the walkthrough offline.
+cat > outcome.json <<EOF
+{
+  "schema_version": "tempus.action-outcome.v1",
+  "authorization_id": "$AUTH_ID",
+  "action_id": "$ACTION_ID",
+  "status": "SUCCEEDED",
+  "external_reference": "acme/widgets#17"
+}
+EOF
+tempus commit-outcome --authorization-id "$AUTH_ID" --outcome outcome.json \
+  --executor-keyfile executor.keys.json > execution.json
+
+# 4. Verify against the gate public key you pinned out of band (no trust in the database)
+GATE_PUB=$(python -c "import json; print(json.load(open('keys.json'))['public_key'])")
+tempus trace --action-id "$ACTION_ID" > receipt.json
+tempus verify-receipt --receipt receipt.json --gate-public-key "$GATE_PUB" \
+  --require-decision ALLOWED --require-execution
+tempus verify-trace --action-id "$ACTION_ID" --gate-public-key "$GATE_PUB" --strict \
+  --require-decision ALLOWED --require-execution
+
+# 5. One self-contained file for an auditor, verified with only that file and the key
+tempus export-bundle --action-id "$ACTION_ID" --out evidence.json --create-checkpoint
+tempus verify-bundle --bundle evidence.json --gate-public-key "$GATE_PUB" \
+  --require-decision ALLOWED --require-execution --require-checkpoint
+```
+
+`request-action` signs the intent with `--agent-keyfile` before the gate sees it. A policy that does not allow the intent still produces a permit file,
+with `"decision": "BLOCKED"` and reason codes; it is a signed denial and no executor will
+act on it. See *Independent verification* below for what the verify commands do and do
+not prove.
+
 ## Checkpoints & Disaster Recovery
 
 Tempus allows generating cryptographically signed monotonic checkpoints and exporting hash-linked event streams without database downtime:
@@ -450,6 +515,17 @@ python examples/full_agent_flow.py
 ## Packaged Mediated Executors
 
 Tempus includes four official, credential-isolated executors out of the box. The requesting AI agent *never* holds downstream API keys or secrets.
+
+**Where `permit.json` comes from.** It is the output of `tempus request-action` (see
+*End-to-end from the CLI*): `tempus request-action --intent intent.json --agent-keyfile
+agent.keys.json > permit.json`. `--gate-id` is the gate's public key (the `public_key`
+in the gate's `keys.json`, also printed by `tempus whoami`), `--tenant-id` must match the
+permit's tenant, and `--executor-keyfile` must be the identity that the policy lists in
+`allowed_executors`. The executor verifies the permit, consumes it once in its own
+`--executor-db` (a second run of the same permit is refused), performs the action with the
+credential only it holds, and prints its signed result. Reporting that outcome to the gate
+(so it appears in the trace) is the separate `tempus commit-outcome` step, as the cookbooks
+do. An expired permit (`--ttl-seconds`) or a `BLOCKED` one is rejected.
 
 ### 1. GitHub Executor (`tempus-github-executor`)
 Performs audited GitHub REST writes with an isolated `GITHUB_TOKEN`:
