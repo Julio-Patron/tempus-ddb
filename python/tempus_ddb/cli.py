@@ -8,7 +8,7 @@ import time
 import warnings
 
 from . import __version__
-from ._tempus_ddb import TempusDDB, gen_keys
+from ._tempus_ddb import TempusDDB, gen_keys, verify_checkpoint, verify_receipt
 from .mcp_server import main_sync
 
 # --- Default paths (used when global args are not provided) ---
@@ -456,14 +456,93 @@ def run_commit_outcome(args):
         sys.exit(1)
 
 
+NOT_INDEPENDENT_WARNING = (
+    "WARNING: NOT INDEPENDENT - no --gate-public-key was given, so the trust root "
+    "comes from the database being verified; a fully forged database verifies "
+    "against itself. Pin the gate public key (published by the gate operator, see "
+    "'tempus whoami') with --gate-public-key HEX|FILE."
+)
+
+
+def _load_public_key(value, label="--gate-public-key"):
+    """Resolve a public key given as 64 hex chars or as a file path.
+
+    A file may hold the bare hex key or a JSON object with a "public_key" field
+    (a gate or identity key file also works: only the public part is read and
+    private material is never used or printed).
+    """
+    raw = value.strip()
+    if os.path.isfile(value):
+        with open(value, encoding="utf-8") as handle:
+            raw = handle.read().strip()
+        if raw.startswith("{"):
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{label}: {value} is not valid JSON: {exc}") from exc
+            raw = str(data.get("public_key") or data.get("gate_public_key") or "")
+            raw = raw.strip()
+            if not raw:
+                raise ValueError(f"{label}: no public_key field in {value}")
+    key = raw.lower()
+    if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
+        raise ValueError(
+            f"{label} must be 64 hex characters (Ed25519 public key) or a file "
+            "containing one"
+        )
+    return key
+
+
+def _pinned_keys(args):
+    """Return (gate_key or None, [executor keys]) from CLI args, enforcing --strict."""
+    gate_arg = getattr(args, "gate_public_key", None)
+    gate_key = _load_public_key(gate_arg) if gate_arg else None
+    executors = [
+        _load_public_key(value, "--executor-public-key")
+        for value in (getattr(args, "executor_public_key", None) or [])
+    ]
+    if executors and gate_key is None:
+        raise ValueError("--executor-public-key requires --gate-public-key")
+    if gate_key is None and getattr(args, "strict", False):
+        raise ValueError(
+            "--strict requires --gate-public-key: independent verification must "
+            "not trust the database's own root of trust"
+        )
+    return gate_key, executors
+
+
+def _read_text_argument(value, label):
+    """Read literal JSON, a file path, or '-' for stdin."""
+    if value == "-":
+        return sys.stdin.read()
+    if os.path.isfile(value):
+        with open(value, encoding="utf-8") as handle:
+            return handle.read()
+    if value.lstrip().startswith("{"):
+        return value
+    raise ValueError(f"--{label}: file not found: {value}")
+
+
+def _print_verification(result_json):
+    parsed = json.loads(result_json)
+    print(json.dumps(parsed, indent=2))
+    if parsed.get("status") != "VERIFIED":
+        sys.exit(2)
+
+
 def run_trace(args, *, verify=False):
     """Read or verify a B2A action trace."""
     db_path, gate_keyfile = _resolve_paths(args)
     try:
+        gate_key, executors = _pinned_keys(args) if verify else (None, [])
         db = TempusDDB(db_path, gate_keyfile)
-        result = (
-            db.verify_trace(args.action_id) if verify else db.get_trace(args.action_id)
-        )
+        if verify and gate_key:
+            result = db.verify_trace(args.action_id, gate_key, executors)
+        elif verify:
+            print(NOT_INDEPENDENT_WARNING, file=sys.stderr)
+            result = db.verify_trace(args.action_id)
+        else:
+            result = db.get_trace(args.action_id)
         parsed = json.loads(result)
         print(json.dumps(parsed, indent=2))
         if verify and parsed.get("status") == "INVALID":
@@ -474,6 +553,20 @@ def run_trace(args, *, verify=False):
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+def run_verify_receipt(args):
+    """Verify a standalone receipt (trace, permit or outcome JSON) without a database."""
+    try:
+        gate_key, executors = _pinned_keys(args)
+        if gate_key is None:
+            raise ValueError("--gate-public-key is required")
+        receipt = _read_text_argument(args.receipt, "receipt")
+        result = verify_receipt(receipt, gate_key, executors or None)
+    except Exception as exc:
+        print(f"[ERROR] Receipt verification failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+    _print_verification(result)
 
 
 def _gate(args):
@@ -610,6 +703,7 @@ def run_checkpoint(args):
             sys.exit(1)
     elif cmd == "verify":
         try:
+            gate_key, _ = _pinned_keys(args)
             chk_raw = args.checkpoint
             if os.path.isfile(chk_raw):
                 with open(chk_raw, "r", encoding="utf-8") as f:
@@ -620,9 +714,23 @@ def run_checkpoint(args):
                 with open(stream_raw, "r", encoding="utf-8") as f:
                     stream_raw = f.read().strip()
 
-            gate = _gate(args)
-            res_str = gate.verify_checkpoint_stream(chk_raw, stream_raw)
-            result = json.loads(res_str)
+            if gate_key:
+                # Independent: no database and no private key file involved.
+                res_str = verify_checkpoint(chk_raw, stream_raw, gate_key)
+                result = json.loads(res_str)
+                result["trust"] = {
+                    "mode": "PINNED_GATE_KEY",
+                    "independent": True,
+                    "gate_public_key": gate_key,
+                }
+            else:
+                print(NOT_INDEPENDENT_WARNING, file=sys.stderr)
+                gate = _gate(args)
+                result = json.loads(gate.verify_checkpoint_stream(chk_raw, stream_raw))
+                result["trust"] = {
+                    "mode": "LOCAL_KEYFILE_OR_DATABASE_ROOT",
+                    "independent": False,
+                }
             print(json.dumps(result, indent=2))
             if result.get("status") != "VERIFIED":
                 sys.exit(2)
@@ -732,6 +840,30 @@ def run_doctor(args):
             print(f"[{check['status']}] {check['name']}: {check['detail']}")
     if overall != "PASS":
         sys.exit(1)
+
+
+def _add_pin_arguments(parser, *, required=False, executors=True):
+    """Arguments that pin the verifier's trust root out of band."""
+    parser.add_argument(
+        "--gate-public-key",
+        required=required,
+        metavar="HEX|FILE",
+        help="Gate Ed25519 public key (64 hex chars, or a file holding it) pinned "
+        "by the verifier. Without it the result is NOT independent",
+    )
+    if executors:
+        parser.add_argument(
+            "--executor-public-key",
+            action="append",
+            metavar="HEX|FILE",
+            help="Pin the executor public key (repeatable; requires --gate-public-key)",
+        )
+    if not required:
+        parser.add_argument(
+            "--strict",
+            action="store_true",
+            help="Refuse to run without --gate-public-key",
+        )
 
 
 def run_version():
@@ -933,6 +1065,20 @@ def main():
         "verify-trace", help="Verify an action trace end to end"
     )
     verify_trace_p.add_argument("--action-id", required=True)
+    _add_pin_arguments(verify_trace_p)
+
+    verify_receipt_p = subparsers.add_parser(
+        "verify-receipt",
+        help="Verify a standalone receipt (trace/permit/outcome JSON) with no "
+        "database, against a pinned gate public key",
+    )
+    verify_receipt_p.add_argument(
+        "--receipt",
+        required=True,
+        help="Receipt JSON file (or '-' for stdin): tempus.action-trace.v1, "
+        "tempus.authorization-result.v1 or tempus.execution-result.v1",
+    )
+    _add_pin_arguments(verify_receipt_p, required=True)
 
     # checkpoint subcommands
     chk_parser = subparsers.add_parser(
@@ -973,6 +1119,7 @@ def main():
     chk_verify.add_argument(
         "--stream", required=True, help="Event stream JSON array string or file path"
     )
+    _add_pin_arguments(chk_verify, executors=False)
 
     args = parser.parse_args()
 
@@ -1027,6 +1174,8 @@ def main():
             run_trace(args)
         elif args.command == "verify-trace":
             run_trace(args, verify=True)
+        elif args.command == "verify-receipt":
+            run_verify_receipt(args)
         elif args.command == "checkpoint":
             run_checkpoint(args)
         elif args.command is None:

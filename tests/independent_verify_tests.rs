@@ -116,6 +116,8 @@ fn world(amount: &str) -> World {
     }
 }
 
+type Mutation = Box<dyn Fn(&mut Value)>;
+
 fn check(receipt: &Value, gate: &str, executors: &[String]) -> Value {
     parse(&verify_receipt(&receipt.to_string(), gate, executors).unwrap())
 }
@@ -258,7 +260,7 @@ fn tampered_receipts_are_invalid() {
             "trace shape changed: {path}"
         );
     }
-    let mutations: Vec<(&str, Box<dyn Fn(&mut Value)>)> = vec![
+    let mutations: Vec<(&str, Mutation)> = vec![
         (
             "amount in the signed intent",
             Box::new(|v| v["authorization"]["intent"]["money"]["amount"] = json!("9999.00")),
