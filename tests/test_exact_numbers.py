@@ -370,3 +370,55 @@ def test_legacy_ledger_still_validates_an_edited_number_which_is_why_it_is_docum
             conn.close()
             code, out, err = run_cli(["--db", db, "verify"], cwd=tmpdir)
             assert code == 0 and "valid" in out, (old, new, out, err)
+
+
+# ----------- CLI: numbers JSON cannot spell exactly use the same code and message
+
+
+@pytest.fixture(scope="module")
+def permit_world_cli(tmp_path_factory):
+    return make_world(tmp_path_factory.mktemp("exact-cli"), "c", execute=False)
+
+
+def _commit_raw_output(world, raw_output):
+    """commit-outcome with the output spelled exactly as given (no json.dumps)."""
+    root = world["root"]
+    receipt = world["permit"]["authorization"]
+    outcome = root / "outcome-raw.json"
+    outcome.write_text(
+        '{"schema_version":"tempus.action-outcome.v1","authorization_id":"%s",'
+        '"action_id":"%s","status":"SUCCEEDED","output":%s}'
+        % (receipt["authorization_id"], receipt["action_id"], raw_output)
+    )
+    return run_cli(
+        [
+            "commit-outcome",
+            "--authorization-id",
+            receipt["authorization_id"],
+            "--outcome",
+            str(outcome),
+            "--executor-keyfile",
+            str(root / "executor.keys.json"),
+        ],
+        cwd=root,
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"a":NaN}',
+        '{"a":Infinity}',
+        '{"a":-Infinity}',
+        '{"a":1e400}',
+        '{"a":-1e400}',
+        '{"a":-0}',
+    ],
+)
+def test_cli_refuses_nan_infinity_overflow_and_negative_zero_as_non_exact(
+    permit_world_cli, raw
+):
+    code, out, err = _commit_raw_output(permit_world_cli, raw)
+    assert code == 1, f"{raw} was accepted: {out}{err}"
+    assert "NON_EXACT_NUMBER" in err, err
+    assert "must be valid JSON" not in err, err

@@ -52,6 +52,13 @@
   - `verify-receipt`, `verify-bundle`, `verify-trace` and `checkpoint verify` report such a
     document as `INVALID` (`AUTHORIZATION_NON_EXACT_NUMBER` / `EXECUTION_NON_EXACT_NUMBER
     (path)`, or reason code `NON_EXACT_NUMBER`), including bundles signed before this change.
+  - `NaN`, `Infinity`, `-Infinity` and numbers that overflow a double (`1e400`) are reported
+    with the same `NON_EXACT_NUMBER` code on the CLI (`--intent`, `--outcome`, `--policy`) and
+    in the gate (`install_policy`, intents, metadata, outcomes). They used to say "must be
+    valid JSON" because Python turned them into `Infinity` before the gate saw them. `-0` is
+    refused too: Python reads it as `0`, so it would be signed as `0` and silently rewritten
+    (write `0`). Decision: reject rather than document, it is one check and removes the
+    only spelling that changed on the way.
   - Behaviour change: an intent whose `input` holds a float used to produce a signed `BLOCKED`
     (`POLICY_NON_DETERMINISTIC_INPUT`); it is now refused before anything is signed.
   - The packaged executors (`ExecutorRuntime`) keep working with downstream answers that

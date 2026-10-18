@@ -141,6 +141,19 @@ pub(crate) fn reject_inexact_numbers(value: &Value, label: &str) -> Result<(), S
     }
 }
 
+/// Message for a document that serde_json could not parse. A number that overflows f64
+/// (`1e400`) is a non-exact number like any other, not a syntax problem.
+pub(crate) fn parse_error_message(label: &str, error: &serde_json::Error) -> String {
+    if error.to_string().contains("number out of range") {
+        format!(
+            "{NON_EXACT_NUMBER_CODE}: {label} holds a number that is not an integer in the \
+             i64/u64 range ({error}); send decimals and larger values as strings"
+        )
+    } else {
+        format!("{label} must be valid JSON: {error}")
+    }
+}
+
 /// True when a parse error was caused by a repeated key.
 pub(crate) fn is_duplicate_key(error: &serde_json::Error) -> bool {
     error.to_string().contains(DUPLICATE_KEY_CODE)

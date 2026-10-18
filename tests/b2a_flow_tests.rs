@@ -878,3 +878,31 @@ fn test_copy_pyd_binary() {
         }
     }
 }
+
+#[test]
+fn numbers_that_overflow_f64_are_non_exact_numbers_not_syntax_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    let gate_keyfile = temp.path().join("gate.keys.json");
+    generate_keypair(gate_keyfile.to_str().unwrap()).unwrap();
+    let gate_id = public_key(&gate_keyfile);
+    let storage = SqliteStorage::new(
+        temp.path().join("tempus.db").to_str().unwrap().to_string(),
+        gate_keyfile.to_str().unwrap().to_string(),
+    )
+    .unwrap();
+
+    for raw in [r#"{"a":1e400}"#, r#"{"a":-1e400}"#, r#"{"a":[1e999]}"#] {
+        let policy = storage.install_policy(raw).unwrap_err();
+        assert!(policy.starts_with("NON_EXACT_NUMBER"), "{raw}: {policy}");
+        let metadata = storage
+            .register_agent(&gate_id, "tempus-gate", raw)
+            .unwrap_err();
+        assert!(
+            metadata.starts_with("NON_EXACT_NUMBER"),
+            "{raw}: {metadata}"
+        );
+    }
+    // Real syntax errors keep their message.
+    let syntax = storage.install_policy("{not json").unwrap_err();
+    assert!(syntax.contains("must be valid JSON"), "{syntax}");
+}

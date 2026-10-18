@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import shutil
 import stat
@@ -30,6 +31,32 @@ def _resolve_paths(args):
     return db, keyfile
 
 
+def _non_exact(label, text):
+    raise ValueError(
+        f"NON_EXACT_NUMBER: --{label} holds the number {text}, which is not an integer in "
+        "the i64/u64 range; send decimals and larger values as strings"
+    )
+
+
+def _parse_float(label, text):
+    # Python reads 1e400 as inf and would later write it back as `Infinity`; a float is
+    # refused by the gate anyway, so report it with the same code as every other one.
+    if not math.isfinite(float(text)):
+        _non_exact(label, text)
+    return float(text)
+
+
+def _parse_int(label, text):
+    # `-0` is read as 0 and signed as 0; a spelling that changes on the way is rejected
+    # instead of being silently rewritten.
+    if text.startswith("-") and not text.lstrip("-0"):
+        _non_exact(label, text)
+    try:
+        return int(text)
+    except ValueError:  # beyond Python's integer digit limit
+        _non_exact(label, text[:20] + "...")
+
+
 def _load_json_argument(value, label):
     """Load a JSON object from a literal string or a file path."""
     if os.path.isfile(value):
@@ -41,7 +68,12 @@ def _load_json_argument(value, label):
             "(pass the path of an existing JSON file, or a JSON object)"
         )
     try:
-        parsed = json.loads(value)
+        parsed = json.loads(
+            value,
+            parse_constant=lambda name: _non_exact(label, name),
+            parse_float=lambda text: _parse_float(label, text),
+            parse_int=lambda text: _parse_int(label, text),
+        )
     except json.JSONDecodeError as exc:
         raise ValueError(
             f"--{label} must be valid JSON or a path to a JSON file: {exc}"

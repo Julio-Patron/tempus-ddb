@@ -187,8 +187,8 @@ pub(crate) fn canonicalize(value: &Value) -> Result<String, String> {
 }
 
 pub(crate) fn parse_canonical(raw: &str, label: &str) -> Result<(Value, String), String> {
-    let value: Value =
-        serde_json::from_str(raw).map_err(|e| format!("{label} must be valid JSON: {e}"))?;
+    let value: Value = serde_json::from_str(raw)
+        .map_err(|e| crate::strict_json::parse_error_message(label, &e))?;
     crate::strict_json::reject_inexact_numbers(&value, label)?;
     let canonical = canonicalize(&value)?;
     Ok((value, canonical))
@@ -1745,8 +1745,8 @@ pub(crate) fn commit_outcome(
     let executor_key = load_signing_key(executor_keyfile)?;
     let executor_id = hex::encode(executor_key.verifying_key().to_bytes());
 
-    let mut outcome_value: Value =
-        serde_json::from_str(outcome).map_err(|e| format!("outcome must be valid JSON: {e}"))?;
+    let mut outcome_value: Value = serde_json::from_str(outcome)
+        .map_err(|e| crate::strict_json::parse_error_message("outcome", &e))?;
     crate::strict_json::reject_inexact_numbers(&outcome_value, "outcome")?;
     if let Some(obj) = outcome_value.as_object_mut() {
         obj.insert(
