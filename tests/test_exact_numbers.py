@@ -574,3 +574,26 @@ def test_results_within_the_budget_are_untouched():
     payload = {"blob": "x" * 900_000, "items": list(range(20_000))}
     receipt = _run_adapter(payload, "d2-fits")
     assert receipt["output"] == payload
+
+
+# ----------- D3: two keys that become the same JSON key must not lose a value silently
+
+
+@pytest.mark.parametrize(
+    "name,payload",
+    [
+        ("int-and-str", {1: "a", "1": "b"}),
+        ("str-first", {"1": "a", 1: "b"}),
+        ("nested", {"outer": {None: 1, "None": 2}}),
+    ],
+)
+def test_colliding_keys_degrade_instead_of_dropping_a_value(name, payload):
+    receipt = _run_adapter(payload, f"d3-{name}")
+    assert receipt["status"] == "SUCCEEDED", receipt
+    assert receipt["output"]["_tempus_output_degraded"] is True
+    assert "same JSON key" in receipt["output"]["reason"]
+
+
+def test_distinct_keys_still_convert():
+    receipt = _run_adapter({1: "a", 2.5: "b", None: "c", "x": "d"}, "d3-ok")
+    assert receipt["output"] == {"1": "a", "2.5": "b", "None": "c", "x": "d"}

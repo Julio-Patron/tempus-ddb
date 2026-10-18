@@ -98,7 +98,8 @@ def exact_json(
     (`Decimal("19.990")` -> "19.990"), `datetime`/`date`/`time` -> ISO 8601, and anything
     else (bytes, sets, arbitrary objects) -> a bounded `repr`. Raises `_Unrepresentable`
     (see `sanitize_output`) for nesting deeper than MAX_OUTPUT_DEPTH, cycles, more than
-    MAX_OUTPUT_NODES values or MAX_OUTPUT_CHARS characters.
+    MAX_OUTPUT_NODES values or MAX_OUTPUT_CHARS characters, and two keys that would become
+    the same JSON key (`1` and `"1"`).
     """
     budget = _budget if _budget is not None else _Budget()
     path = _path if _path is not None else set()
@@ -140,6 +141,10 @@ def exact_json(
                 for key, item in value.items():
                     name = key if isinstance(key, str) else str(key)
                     budget.spend(len(name))
+                    if name in converted:
+                        raise _Unrepresentable(
+                            f"two keys become the same JSON key {_bounded_repr(name)}"
+                        )
                     converted[name] = exact_json(item, _depth + 1, budget, path)
                 return converted
             return [exact_json(item, _depth + 1, budget, path) for item in value]

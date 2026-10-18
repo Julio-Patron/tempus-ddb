@@ -131,7 +131,12 @@ policy on the permit's intent before consuming it, and read the same intent text
     it. Not solved: a `__repr__` / `__str__` that sleeps or loops cannot be interrupted from
     Python; the conversion has a size bound, not a time bound, and runs adapter code only for
     objects the adapter itself returned.
-    A result that cannot be converted at all (nesting beyond 64 levels, cycles, too large) is recorded
+    Keys that are not strings become `str(key)`; if two keys would become the same JSON key
+    (`{1: "a", "1": "b"}`, which used to keep only `"b"` without a word) the result is
+    degraded instead. (`{1: "a", True: "b"}` is one key in Python itself, before the runtime
+    sees it.)
+    A result that cannot be converted at all (nesting beyond 64 levels, cycles, too large, key
+    collisions) is recorded
     with the adapter's own status and the marker
     `{"_tempus_output_degraded": true, "reason": ..., "repr": <bounded>}`. Before, such a
     result made the runtime record `FAILED` (`EXECUTION_EXCEPTION`) although the external
