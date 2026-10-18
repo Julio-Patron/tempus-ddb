@@ -148,6 +148,25 @@ enum Commands {
         gate_keyfile: String,
         #[arg(long)]
         action_id: String,
+        /// Gate public key (64 hex chars) pinned by the verifier. Without it the
+        /// result is marked "independent": false (trust root taken from the DB).
+        #[arg(long)]
+        gate_public_key: Option<String>,
+        /// Optional executor public key(s) to pin (requires --gate-public-key)
+        #[arg(long = "executor-public-key")]
+        executor_public_keys: Vec<String>,
+    },
+    /// Verify a standalone receipt (trace, permit or outcome JSON) without a database
+    VerifyReceipt {
+        /// Path to the receipt JSON
+        #[arg(long)]
+        receipt: String,
+        /// Gate public key (64 hex chars) pinned by the verifier
+        #[arg(long)]
+        gate_public_key: String,
+        /// Optional executor public key(s) to pin
+        #[arg(long = "executor-public-key")]
+        executor_public_keys: Vec<String>,
     },
 }
 
@@ -420,6 +439,8 @@ fn main() {
             db,
             gate_keyfile,
             action_id,
+            gate_public_key,
+            executor_public_keys,
         } => {
             let storage = match _tempus_ddb::SqliteStorage::new(db, gate_keyfile) {
                 Ok(storage) => storage,
@@ -428,18 +449,53 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            match storage.verify_trace(&action_id) {
-                Ok(json) => {
-                    println!("{json}");
-                    if json.contains("\"status\":\"INVALID\"") {
-                        std::process::exit(2);
-                    }
+            let result = match gate_public_key {
+                Some(gate) => storage.verify_trace_pinned(&action_id, &gate, &executor_public_keys),
+                None if !executor_public_keys.is_empty() => {
+                    Err("--executor-public-key requires --gate-public-key".to_string())
                 }
+                None => {
+                    eprintln!(
+                        "WARNING: no --gate-public-key: NOT INDEPENDENT (trust root comes from \
+                         the database being verified)"
+                    );
+                    storage.verify_trace(&action_id)
+                }
+            };
+            print_verification(result);
+        }
+        Commands::VerifyReceipt {
+            receipt,
+            gate_public_key,
+            executor_public_keys,
+        } => {
+            let raw = match std::fs::read_to_string(&receipt) {
+                Ok(raw) => raw,
                 Err(error) => {
-                    eprintln!("Error verifying trace: {error}");
+                    eprintln!("Error reading receipt '{receipt}': {error}");
                     std::process::exit(1);
                 }
+            };
+            print_verification(_tempus_ddb::verify_receipt(
+                &raw,
+                &gate_public_key,
+                &executor_public_keys,
+            ));
+        }
+    }
+}
+
+fn print_verification(result: Result<String, String>) {
+    match result {
+        Ok(json) => {
+            println!("{json}");
+            if json.contains("\"status\":\"INVALID\"") {
+                std::process::exit(2);
             }
+        }
+        Err(error) => {
+            eprintln!("Error verifying: {error}");
+            std::process::exit(1);
         }
     }
 }

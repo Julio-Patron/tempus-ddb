@@ -16,6 +16,21 @@ const TRACE_VERIFICATION_SCHEMA: &str = "tempus.trace-verification.v1";
 const AGENT_REGISTRATION_SCHEMA: &str = "tempus.agent-registration.v1";
 const LEGACY_POLICY_VERSION: &str = "tempus.identity-gate.v1";
 
+/// Where the verifier gets its trust from.
+///
+/// `Database` is the legacy behaviour: the trusted root, agent registry and
+/// executor identities all come from the database being verified, so a
+/// completely forged database verifies against itself. `Pinned` takes the gate
+/// public key from the verifier (out of band) and never consults a database.
+#[derive(Clone, Copy)]
+pub(crate) enum Trust<'a> {
+    Database(&'a Connection),
+    Pinned {
+        gate: &'a str,
+        executors: &'a [String],
+    },
+}
+
 #[derive(Debug)]
 struct AgentState {
     active: bool,
@@ -1227,7 +1242,7 @@ pub(crate) fn request_action_signed(
         if existing_hash == intent_hash {
             let existing_value: Value = serde_json::from_str(&authorization_json)
                 .map_err(|e| format!("TEMPUS_STORED_AUTHORIZATION_INVALID: {e}"))?;
-            let errors = verify_authorization(storage, &existing_value);
+            let errors = verify_authorization(Trust::Database(&storage.conn), &existing_value);
             if !errors.is_empty() {
                 return Err(format!(
                     "TEMPUS_STORED_AUTHORIZATION_INVALID: {}",
@@ -1397,7 +1412,7 @@ pub(crate) fn request_action_signed(
     Ok(authorization_json)
 }
 
-fn verify_authorization(storage: &SqliteStorage, result: &Value) -> Vec<String> {
+fn verify_authorization(trust: Trust<'_>, result: &Value) -> Vec<String> {
     let mut errors = Vec::new();
     if result.get("schema_version").and_then(Value::as_str) != Some(AUTHORIZATION_RESULT_SCHEMA) {
         errors.push("AUTHORIZATION_RESULT_SCHEMA_MISMATCH".to_string());
@@ -1450,16 +1465,31 @@ fn verify_authorization(storage: &SqliteStorage, result: &Value) -> Vec<String> 
         .get("issued_at")
         .and_then(Value::as_u64)
         .unwrap_or_default();
-    match verify_agent_state_at(&storage.conn, gate_id, authorization_issued_at) {
-        Ok(Some(state)) if state.active && state.can_delegate => {}
-        Ok(_) => errors.push("GATE_IDENTITY_NOT_TRUSTED".to_string()),
-        Err(error) => errors.push(error),
+    match trust {
+        Trust::Database(conn) => {
+            match verify_agent_state_at(conn, gate_id, authorization_issued_at) {
+                Ok(Some(state)) if state.active && state.can_delegate => {}
+                Ok(_) => errors.push("GATE_IDENTITY_NOT_TRUSTED".to_string()),
+                Err(error) => errors.push(error),
+            }
+        }
+        Trust::Pinned { gate, .. } => {
+            if gate_id != gate {
+                errors.push("GATE_KEY_NOT_PINNED".to_string());
+            }
+        }
     }
 
+    let pinned_gate = match trust {
+        Trust::Pinned { gate, .. } => Some(gate),
+        Trust::Database(_) => None,
+    };
     let policy_bundle = result.get("policy_bundle");
     match policy_bundle {
         Some(bundle) => {
-            if let Err(error) = crate::phase3::verify_policy_bundle(bundle, Some(gate_id)) {
+            if let Err(error) =
+                crate::phase3::verify_policy_bundle(bundle, Some(pinned_gate.unwrap_or(gate_id)))
+            {
                 errors.push(error);
             }
             if authorization.get("policy_version") != bundle.get("policy_version") {
@@ -1611,8 +1641,18 @@ fn verify_authorization(storage: &SqliteStorage, result: &Value) -> Vec<String> 
                     .unwrap_or_default()
                     .saturating_sub(authorization_issued_at)
                     / 1_000_000;
+                // Pinned verification has no agent registry to consult. The
+                // pinned gate key attests registration; a denial for a registry
+                // reason is accepted as-is (it can only reduce authority), but an
+                // ALLOWED decision must be reproducible from everything else.
+                let agent_state = match trust {
+                    Trust::Database(conn) => {
+                        verify_agent_state_at(conn, agent_id, authorization_issued_at).map(Some)
+                    }
+                    Trust::Pinned { .. } => Ok(None),
+                };
                 match (
-                    verify_agent_state_at(&storage.conn, agent_id, authorization_issued_at),
+                    agent_state,
                     crate::phase3::evaluate_policy(bundle, intent, ttl_seconds),
                 ) {
                     (Ok(agent_state), Ok(policy)) => {
@@ -1621,17 +1661,41 @@ fn verify_authorization(storage: &SqliteStorage, result: &Value) -> Vec<String> 
                             canonical_intent.as_bytes(),
                             agent_signature,
                         );
-                        let active = agent_state.as_ref().is_some_and(|state| state.active);
-                        let tenant_allowed = agent_state.as_ref().is_some_and(|state| {
-                            state.tenant_id == "*" || state.tenant_id == fields.tenant_id
-                        });
+                        let registry_known = agent_state.is_some();
+                        let agent_state = agent_state.flatten();
+                        let active = !registry_known
+                            || agent_state.as_ref().is_some_and(|state| state.active);
+                        let tenant_allowed = !registry_known
+                            || agent_state.as_ref().is_some_and(|state| {
+                                state.tenant_id == "*" || state.tenant_id == fields.tenant_id
+                            });
                         let too_old = authorization_issued_at.saturating_sub(fields.requested_at)
                             > 300_000_000;
                         let from_future =
                             fields.requested_at.saturating_sub(authorization_issued_at)
                                 > 60_000_000;
+                        let recorded_reasons = authorization.get("reason_codes");
+                        let registry_denial = !registry_known
+                            && signature_valid
+                            && authorization.get("decision").and_then(Value::as_str)
+                                == Some("BLOCKED")
+                            && (recorded_reasons == Some(&json!(["AGENT_NOT_REGISTERED"]))
+                                || recorded_reasons == Some(&json!(["AGENT_TENANT_SCOPE_DENIED"])));
                         let (expected_decision, expected_reasons): (&str, Vec<String>) =
-                            if !signature_valid {
+                            if registry_denial {
+                                (
+                                    "BLOCKED",
+                                    recorded_reasons
+                                        .and_then(Value::as_array)
+                                        .map(|values| {
+                                            values
+                                                .iter()
+                                                .filter_map(|v| v.as_str().map(str::to_string))
+                                                .collect()
+                                        })
+                                        .unwrap_or_default(),
+                                )
+                            } else if !signature_valid {
                                 ("BLOCKED", vec!["INVALID_AGENT_SIGNATURE".to_string()])
                             } else if !active {
                                 ("BLOCKED", vec!["AGENT_NOT_REGISTERED".to_string()])
@@ -1722,7 +1786,8 @@ pub(crate) fn commit_outcome_signed(
         .ok_or_else(|| "TEMPUS_AUTHORIZATION_NOT_FOUND".to_string())?;
     let authorization_value: Value = serde_json::from_str(&authorization_json)
         .map_err(|e| format!("Stored authorization is invalid JSON: {e}"))?;
-    let authorization_errors = verify_authorization(storage, &authorization_value);
+    let authorization_errors =
+        verify_authorization(Trust::Database(&storage.conn), &authorization_value);
     if !authorization_errors.is_empty() {
         return Err(format!(
             "TEMPUS_AUTHORIZATION_INVALID: {}",
@@ -1786,7 +1851,11 @@ pub(crate) fn commit_outcome_signed(
         if existing_hash == outcome_hash {
             let execution_value: Value = serde_json::from_str(&execution_json)
                 .map_err(|e| format!("TEMPUS_STORED_EXECUTION_INVALID: {e}"))?;
-            let errors = verify_execution(storage, &authorization_value, &execution_value);
+            let errors = verify_execution(
+                Trust::Database(&storage.conn),
+                Some(&authorization_value),
+                &execution_value,
+            );
             if !errors.is_empty() {
                 return Err(format!(
                     "TEMPUS_STORED_EXECUTION_INVALID: {}",
@@ -1932,8 +2001,8 @@ pub(crate) fn commit_outcome_signed(
 }
 
 fn verify_execution(
-    storage: &SqliteStorage,
-    authorization: &Value,
+    trust: Trust<'_>,
+    authorization: Option<&Value>,
     execution: &Value,
 ) -> Vec<String> {
     let mut errors = Vec::new();
@@ -1982,16 +2051,34 @@ fn verify_execution(
     if !verify_digest_signature(gate_id, &receipt_id, &gate_signature) {
         errors.push("EXECUTION_GATE_SIGNATURE_INVALID".to_string());
     }
-    let authorization_receipt = authorization.get("authorization").unwrap_or(&Value::Null);
-    for field in ["authorization_id", "action_id", "intent_hash"] {
-        if receipt.get(field) != authorization_receipt.get(field) {
-            errors.push(format!("EXECUTION_{field}_MISMATCH").to_uppercase());
+    // A standalone outcome has no permit to link to; take the ids from the
+    // receipt itself and report the linkage as not checked.
+    let authorization_receipt = match authorization {
+        Some(authorization) => authorization
+            .get("authorization")
+            .unwrap_or(&Value::Null)
+            .clone(),
+        None => json!({
+            "authorization_id": receipt.get("authorization_id").cloned().unwrap_or(Value::Null),
+            "action_id": receipt.get("action_id").cloned().unwrap_or(Value::Null),
+        }),
+    };
+    if authorization.is_some() {
+        for field in ["authorization_id", "action_id", "intent_hash"] {
+            if receipt.get(field) != authorization_receipt.get(field) {
+                errors.push(format!("EXECUTION_{field}_MISMATCH").to_uppercase());
+            }
+        }
+        if receipt.get("executor_id").is_some()
+            && receipt.get("executor_id") == authorization_receipt.get("agent_id")
+        {
+            errors.push("EXECUTOR_AGENT_COLLUSION".to_string());
         }
     }
-    if receipt.get("executor_id").is_some()
-        && receipt.get("executor_id") == authorization_receipt.get("agent_id")
-    {
-        errors.push("EXECUTOR_AGENT_COLLUSION".to_string());
+    if let Trust::Pinned { gate, .. } = trust {
+        if gate_id != gate {
+            errors.push("EXECUTION_GATE_KEY_NOT_PINNED".to_string());
+        }
     }
     let Some(outcome) = execution.get("outcome") else {
         errors.push("OUTCOME_MISSING".to_string());
@@ -2040,23 +2127,32 @@ fn verify_execution(
         .get("completed_at")
         .and_then(Value::as_u64)
         .unwrap_or_default();
-    match verify_agent_state_at(&storage.conn, executor_id, completed_at) {
-        Ok(Some(state)) if state.active => {
-            let auth_tenant = authorization_receipt
-                .get("tenant_id")
-                .and_then(Value::as_str)
-                .unwrap_or("*");
-            if state.tenant_id != "*" && auth_tenant != "*" && state.tenant_id != auth_tenant {
-                errors.push("EXECUTOR_TENANT_SCOPE_MISMATCH".to_string());
-            }
-            if let Ok(meta_val) = serde_json::from_str::<Value>(&state.metadata) {
-                if meta_val.get("role").and_then(Value::as_str) == Some("proposer") {
-                    errors.push("EXECUTOR_ROLE_INVALID".to_string());
+    match trust {
+        Trust::Database(conn) => match verify_agent_state_at(conn, executor_id, completed_at) {
+            Ok(Some(state)) if state.active => {
+                let auth_tenant = authorization_receipt
+                    .get("tenant_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("*");
+                if state.tenant_id != "*" && auth_tenant != "*" && state.tenant_id != auth_tenant {
+                    errors.push("EXECUTOR_TENANT_SCOPE_MISMATCH".to_string());
+                }
+                if let Ok(meta_val) = serde_json::from_str::<Value>(&state.metadata) {
+                    if meta_val.get("role").and_then(Value::as_str) == Some("proposer") {
+                        errors.push("EXECUTOR_ROLE_INVALID".to_string());
+                    }
                 }
             }
+            Ok(_) => errors.push("EXECUTOR_IDENTITY_NOT_TRUSTED".to_string()),
+            Err(error) => errors.push(error),
+        },
+        Trust::Pinned { executors, .. } => {
+            // Executor pinning is optional: without it the pinned gate key
+            // attests the executor identity (reported as not checked).
+            if !executors.is_empty() && !executors.iter().any(|key| key == executor_id) {
+                errors.push("EXECUTOR_KEY_NOT_PINNED".to_string());
+            }
         }
-        Ok(_) => errors.push("EXECUTOR_IDENTITY_NOT_TRUSTED".to_string()),
-        Err(error) => errors.push(error),
     }
     let authorization_id = authorization_receipt
         .get("authorization_id")
@@ -2111,18 +2207,52 @@ pub(crate) fn get_trace(storage: &SqliteStorage, action_id: &str) -> Result<Stri
     }))
 }
 
-pub(crate) fn verify_trace(storage: &SqliteStorage, action_id: &str) -> Result<String, String> {
-    let trace: Value = serde_json::from_str(&get_trace(storage, action_id)?)
-        .map_err(|e| format!("Stored trace is invalid JSON: {e}"))?;
-    let authorization = trace
-        .get("authorization")
-        .ok_or_else(|| "TEMPUS_AUTHORIZATION_NOT_FOUND".to_string())?;
-    let mut errors = verify_authorization(storage, authorization);
-    let execution = trace.get("execution").filter(|value| !value.is_null());
-    if let Some(execution) = execution {
-        errors.extend(verify_execution(storage, authorization, execution));
+fn trust_json(trust: Trust<'_>, standalone_outcome: bool) -> Value {
+    match trust {
+        Trust::Database(_) => json!({
+            "mode": "DATABASE_SELF_ATTESTED",
+            "independent": false,
+            "warning": "NOT INDEPENDENT: the trusted root comes from the database being verified, so a fully forged database verifies against itself. Pin the gate public key (gate_public_key) for independent verification.",
+        }),
+        Trust::Pinned { gate, executors } => {
+            let mut not_checked = vec![
+                "AGENT_REGISTRATION_AT_ISSUE (attested by the pinned gate signature)",
+                "SINGLE_USE_CONSUMPTION (cannot be proven from a document alone)",
+            ];
+            if executors.is_empty() {
+                not_checked.push("EXECUTOR_IDENTITY (not pinned; attested by the gate signature)");
+            }
+            if standalone_outcome {
+                not_checked.push("PERMIT_LINKAGE (outcome verified without its permit)");
+            }
+            json!({
+                "mode": "PINNED_GATE_KEY",
+                "independent": true,
+                "gate_public_key": gate,
+                "executor_keys_pinned": executors.len(),
+                "not_checked": not_checked,
+            })
+        }
     }
-    let receipt = authorization.get("authorization").unwrap_or(&Value::Null);
+}
+
+fn verify_documents(
+    trust: Trust<'_>,
+    kind: &str,
+    action_id: &str,
+    authorization: Option<&Value>,
+    execution: Option<&Value>,
+) -> Result<String, String> {
+    let mut errors = match authorization {
+        Some(authorization) => verify_authorization(trust, authorization),
+        None => Vec::new(),
+    };
+    if let Some(execution) = execution {
+        errors.extend(verify_execution(trust, authorization, execution));
+    }
+    let receipt = authorization
+        .and_then(|value| value.get("authorization"))
+        .unwrap_or(&Value::Null);
     let decision = receipt
         .get("decision")
         .and_then(Value::as_str)
@@ -2145,15 +2275,134 @@ pub(crate) fn verify_trace(storage: &SqliteStorage, action_id: &str) -> Result<S
     } else {
         "INVALID"
     };
+    let authorization_check = if authorization.is_none() {
+        "NOT_PRESENT"
+    } else if errors.iter().any(|error| {
+        error.contains("AUTHORIZATION")
+            || error.contains("INTENT")
+            || error.contains("AGENT")
+            || error.contains("GATE")
+    }) {
+        "FAILED"
+    } else {
+        "VERIFIED"
+    };
+    let execution_check = if execution.is_none() {
+        "NOT_PRESENT"
+    } else if errors.iter().any(|error| {
+        error.contains("EXECUTION") || error.contains("OUTCOME") || error.contains("EXECUTOR")
+    }) {
+        "FAILED"
+    } else {
+        "VERIFIED"
+    };
     canonicalize(&json!({
         "schema_version": TRACE_VERIFICATION_SCHEMA,
         "status": status,
+        "kind": kind,
         "action_id": action_id,
         "phase": phase,
+        "trust": trust_json(trust, authorization.is_none() && execution.is_some()),
         "checks": {
-            "authorization": if errors.iter().any(|error| error.contains("AUTHORIZATION") || error.contains("INTENT") || error.contains("AGENT") || error.contains("GATE")) { "FAILED" } else { "VERIFIED" },
-            "execution": if execution.is_none() { "NOT_PRESENT" } else if errors.iter().any(|error| error.contains("EXECUTION") || error.contains("OUTCOME") || error.contains("EXECUTOR")) { "FAILED" } else { "VERIFIED" },
+            "authorization": authorization_check,
+            "execution": execution_check,
         },
         "errors": errors,
     }))
+}
+
+fn verify_trace_value(trust: Trust<'_>, trace: &Value) -> Result<String, String> {
+    let authorization = trace
+        .get("authorization")
+        .ok_or_else(|| "TEMPUS_AUTHORIZATION_NOT_FOUND".to_string())?;
+    let execution = trace.get("execution").filter(|value| !value.is_null());
+    let action_id = trace
+        .get("action_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    verify_documents(trust, "trace", action_id, Some(authorization), execution)
+}
+
+/// Legacy verification: trust root taken from the database itself.
+pub(crate) fn verify_trace(storage: &SqliteStorage, action_id: &str) -> Result<String, String> {
+    let trace: Value = serde_json::from_str(&get_trace(storage, action_id)?)
+        .map_err(|e| format!("Stored trace is invalid JSON: {e}"))?;
+    verify_trace_value(Trust::Database(&storage.conn), &trace)
+}
+
+fn normalize_pinned_key(key: &str, label: &str) -> Result<String, String> {
+    let key = key.trim().to_ascii_lowercase();
+    decode_public_key(&key).map_err(|error| format!("{label}: {error}"))?;
+    Ok(key)
+}
+
+fn normalize_pinned(gate: &str, executors: &[String]) -> Result<(String, Vec<String>), String> {
+    let gate = normalize_pinned_key(gate, "gate public key")?;
+    let executors = executors
+        .iter()
+        .map(|key| normalize_pinned_key(key, "executor public key"))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((gate, executors))
+}
+
+/// Verify the stored trace against a gate public key pinned by the verifier.
+/// The database is only used as a container for the receipt documents.
+pub(crate) fn verify_trace_pinned(
+    storage: &SqliteStorage,
+    action_id: &str,
+    gate: &str,
+    executors: &[String],
+) -> Result<String, String> {
+    let (gate, executors) = normalize_pinned(gate, executors)?;
+    let trace: Value = serde_json::from_str(&get_trace(storage, action_id)?)
+        .map_err(|e| format!("Stored trace is invalid JSON: {e}"))?;
+    verify_trace_value(
+        Trust::Pinned {
+            gate: &gate,
+            executors: &executors,
+        },
+        &trace,
+    )
+}
+
+/// Verify a standalone receipt document without any database. Accepts a full
+/// trace (`tempus.action-trace.v1`), a permit (`tempus.authorization-result.v1`)
+/// or an outcome (`tempus.execution-result.v1`).
+pub(crate) fn verify_receipt_pinned(
+    receipt_json: &str,
+    gate: &str,
+    executors: &[String],
+) -> Result<String, String> {
+    let (gate, executors) = normalize_pinned(gate, executors)?;
+    let trust = Trust::Pinned {
+        gate: &gate,
+        executors: &executors,
+    };
+    let document: Value = serde_json::from_str(receipt_json)
+        .map_err(|e| format!("Receipt is not valid JSON: {e}"))?;
+    match document.get("schema_version").and_then(Value::as_str) {
+        Some(TRACE_SCHEMA) => verify_trace_value(trust, &document),
+        Some(AUTHORIZATION_RESULT_SCHEMA) => {
+            let action_id = document
+                .get("authorization")
+                .and_then(|value| value.get("action_id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            verify_documents(trust, "authorization", &action_id, Some(&document), None)
+        }
+        Some(EXECUTION_RESULT_SCHEMA) => {
+            let action_id = document
+                .get("receipt")
+                .and_then(|value| value.get("action_id"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            verify_documents(trust, "execution", &action_id, None, Some(&document))
+        }
+        other => Err(format!(
+            "TEMPUS_RECEIPT_SCHEMA_UNKNOWN: expected {TRACE_SCHEMA}, {AUTHORIZATION_RESULT_SCHEMA} or {EXECUTION_RESULT_SCHEMA}, got {}",
+            other.unwrap_or("none")
+        )),
+    }
 }
