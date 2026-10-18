@@ -53,6 +53,13 @@
   `tests/test_money_amount_parity.py` runs the same amount strings through the real gate
   and through the executor and requires equal verdicts.
 
+- **N5-3: beneficiary type.** Without `allowed_beneficiaries` nothing checked the type of
+  `money.beneficiary`, and the executor paid `str(None)`, i.e. the string `"None"`, for a
+  `null`. The gate (`validate_money`) and `PaymentActionAdapter` now require a non-empty
+  string whenever the field is present or needed; the executor never stringifies it.
+  Still open: a *missing* beneficiary passes the gate when `allowed_beneficiaries` is not
+  constrained (the field is generic to `money`), and the payment executor then refuses it.
+
 ### Security: the HTTP executor fails closed (forge 5)
 - **H1: credentials without an allowlist.** A policy prefix written without the slash after
   the host (`https://api.example.com*`) also matches `https://api.example.com.evil.net/`, and

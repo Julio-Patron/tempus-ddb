@@ -167,10 +167,10 @@ class PaymentActionAdapter:
 
         # The same reading the policy evaluated, never a field it skipped.
         amount, asset = canonical_money(money)
-        beneficiary = str(money.get("beneficiary", ""))
-
-        if not beneficiary:
-            raise PaymentExecutorError("Missing 'beneficiary' in money metadata")
+        # Paid exactly as written: never str() of a null/number/list ("None" was paid).
+        beneficiary = money.get("beneficiary")
+        if not isinstance(beneficiary, str) or not beneficiary:
+            raise PaymentExecutorError("money.beneficiary must be a non-empty string")
 
         if self._allowed_beneficiaries is not None:
             # Compare the value the transport will receive, as written: no strip or

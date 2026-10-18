@@ -780,6 +780,15 @@ pub(crate) fn validate_money(money: &Value) -> Result<(u64, String), String> {
         (Some(value), _) | (None, Some(value)) => value.to_string(),
         (None, None) => return Err("TEMPUS_INVALID_CONTRACT: money.asset is required".to_string()),
     };
+    // The executor pays this value as written: when present it must be a real string.
+    // (It is only *required* here when `allowed_beneficiaries` constrains it.)
+    if let Some(beneficiary) = money.get("beneficiary") {
+        if !matches!(beneficiary, Value::String(text) if !text.is_empty()) {
+            return Err(
+                "TEMPUS_INVALID_CONTRACT: money.beneficiary must be a non-empty string".to_string(),
+            );
+        }
+    }
     let from_text = match money.get("amount") {
         None => None,
         Some(Value::String(text)) => Some(parse_minor_units(text)?),
@@ -1263,10 +1272,18 @@ mod tests {
             (2550, "USD".into())
         );
         assert_eq!(
+            ok(json!({"amount": "1.00", "asset": "USD", "beneficiary": "alice"})),
+            (100, "USD".into())
+        );
+        assert_eq!(
             ok(json!({"amount": "25.50", "amount_minor": 2550, "currency": "USD", "asset": "USD"})),
             (2550, "USD".into())
         );
         for money in [
+            json!({"amount": "1.00", "asset": "USD", "beneficiary": null}),
+            json!({"amount": "1.00", "asset": "USD", "beneficiary": ""}),
+            json!({"amount": "1.00", "asset": "USD", "beneficiary": 7}),
+            json!({"amount": "1.00", "asset": "USD", "beneficiary": ["a"]}),
             json!({"amount": "5.", "asset": "USD"}),
             json!({"amount": "0.", "asset": "USD"}),
             json!({"amount": ".5", "asset": "USD"}),
