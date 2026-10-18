@@ -756,6 +756,12 @@ Same exit codes as above (0 VERIFIED, 2 INVALID, 1 usage). Python:
 - Fields outside the schema at the top level of a bundle, in its `trace` or in its
   `checkpoint` wrapper are `INVALID` (`UNKNOWN_FIELD (<path>)`): they would be unsigned
   text travelling inside a verified file.
+- Numbers in signed documents must be integers in the i64/u64 range. A float, or a larger
+  integer, can be spelled several ways for one stored value (`0.1` / `1e-1`, `...567890` /
+  `...567891`), so the gate refuses it when it arrives (`NON_EXACT_NUMBER`) and the
+  verifiers report a document containing one as `INVALID`. Send decimals and large values as
+  strings (`"amount": "25.00"`). The packaged executors convert such numbers in a
+  downstream answer to strings before signing the outcome.
 - `--gate-public-key` and `--executor-public-key` must not be empty: an empty value (for
   example an unset shell variable) is a usage error (exit 1), never "unpinned".
 - `VERIFIED` alone does not say that the action was allowed or executed: a `BLOCKED`

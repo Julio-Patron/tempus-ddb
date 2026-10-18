@@ -258,16 +258,22 @@ pub(crate) fn verify_checkpoint_stream(
     stream_json: &str,
     expected_public_key: Option<&str>,
 ) -> Result<String, String> {
-    let duplicate_key = |label: &str| {
+    let invalid = |reason: &str, message: String| {
         Ok(json!({
             "schema_version": CHECKPOINT_VERIFICATION_SCHEMA,
             "status": "INVALID",
             "checkpoint_id": "unknown",
             "events_verified": 0,
-            "reason_code": "DUPLICATE_JSON_KEY",
-            "message": format!("{label} repeats a JSON object key; the document is ambiguous"),
+            "reason_code": reason,
+            "message": message,
         })
         .to_string())
+    };
+    let duplicate_key = |label: &str| {
+        invalid(
+            "DUPLICATE_JSON_KEY",
+            format!("{label} repeats a JSON object key; the document is ambiguous"),
+        )
     };
     let checkpoint: Value = match crate::strict_json::parse(checkpoint_json) {
         Ok(value) => value,
@@ -280,6 +286,15 @@ pub(crate) fn verify_checkpoint_stream(
         Err(e) if crate::strict_json::is_duplicate_key(&e) => return duplicate_key("stream"),
         Err(e) => return Err(format!("Invalid stream JSON: {e}")),
     };
+
+    for (label, document) in [("checkpoint", &checkpoint), ("stream", &stream)] {
+        if let Some(path) = crate::strict_json::find_inexact_number(document) {
+            return invalid(
+                crate::strict_json::NON_EXACT_NUMBER_CODE,
+                format!("{label} holds a number at {path} that is not an exact integer"),
+            );
+        }
+    }
 
     let events = match stream.as_array() {
         Some(arr) => arr,

@@ -25,6 +25,24 @@
   `--gate-public-key` / `--executor-public-key` now exits 1 on every verifier; only
   omitting the option means "not pinned". In Python an empty string already raised;
   `verify_trace(id, None)` remains the documented unpinned mode.
+- **Signed documents hold only exact numbers.** `serde_json` reads every float, and every
+  integer outside i64/u64, as an f64. The gate rounded such numbers before signing (an
+  outcome `output` of `123456789012345678901234567890` was signed as `1.2345678901234568e29`)
+  and the verifier accepted any text with the same f64 (`...567891`, `...567000`, `...890.0`;
+  `0.1` as `0.10` or `1e-1`). Now only integers in the i64/u64 range are allowed as numbers
+  in anything the gate signs or verifies:
+  - The gate refuses them when they arrive (`NON_EXACT_NUMBER: ... at $.path`, exit 1 on the
+    CLI): outcomes (`commit-outcome`, executor `complete_execution`), intents, agent
+    metadata and policies. Decimals and larger values must be strings (`"25.00"`,
+    `"123456789012345678901234567890"` are unaffected).
+  - `verify-receipt`, `verify-bundle`, `verify-trace` and `checkpoint verify` report such a
+    document as `INVALID` (`AUTHORIZATION_NON_EXACT_NUMBER` / `EXECUTION_NON_EXACT_NUMBER
+    (path)`, or reason code `NON_EXACT_NUMBER`), including bundles signed before this change.
+  - Behaviour change: an intent whose `input` holds a float used to produce a signed `BLOCKED`
+    (`POLICY_NON_DETERMINISTIC_INPUT`); it is now refused before anything is signed.
+  - The packaged executors (`ExecutorRuntime`) keep working with downstream answers that
+    contain floats or huge integers: the payload is converted (`0.1` -> `"0.1"`, a 30-digit
+    integer -> its exact digits) before the outcome is signed.
 - **VERIFIED now says what was decided and executed.** Results of `verify-receipt`,
   `verify-trace` and `verify-bundle` carry `decision` (`ALLOWED`/`BLOCKED`) and
   `execution_status` (`SUCCEEDED`/`FAILED`, `null` when there is no outcome); both are

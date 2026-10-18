@@ -467,19 +467,18 @@ fn phase3_policy_rotation_and_emergency_revocation_are_enforced() {
         "vendor-api/credits",
     ));
     nondeterministic_intent["input"]["ratio"] = json!(1.5);
-    let nondeterministic = parse(
-        &storage
-            .request_action(
-                &nondeterministic_intent.to_string(),
-                agent_v1_keyfile.to_str().unwrap(),
-                30,
-            )
-            .unwrap(),
-    );
-    assert_eq!(nondeterministic["authorization"]["decision"], "BLOCKED");
-    assert_eq!(
-        nondeterministic["authorization"]["reason_codes"][0],
-        "POLICY_NON_DETERMINISTIC_INPUT"
+    // A float in the input can be spelled several ways for one f64, so it is refused when
+    // the intent arrives instead of being signed (it no longer yields a signed denial).
+    let nondeterministic = storage
+        .request_action(
+            &nondeterministic_intent.to_string(),
+            agent_v1_keyfile.to_str().unwrap(),
+            30,
+        )
+        .unwrap_err();
+    assert!(
+        nondeterministic.starts_with("NON_EXACT_NUMBER"),
+        "{nondeterministic}"
     );
 
     let mut cross_tenant_intent = parse(&intent(

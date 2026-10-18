@@ -13,6 +13,30 @@ from typing import Any, Dict, NamedTuple, Optional, Protocol, Set
 
 from ._tempus_ddb import TempusExecutor
 
+_I64_MIN, _U64_MAX = -(2**63), 2**64 - 1
+
+
+def exact_json(value: Any) -> Any:
+    """Make a payload safe to sign: only integers in i64/u64 range stay numbers.
+
+    The gate refuses signed documents that hold floats or larger integers, because JSON
+    text can spell them several ways and the verifier could not tell which was signed. A
+    downstream API answer is not under the executor's control, so such numbers become
+    strings (`0.1` -> "0.1", a 30-digit integer -> its exact digits) instead of making the
+    outcome of an effect that already happened impossible to record.
+    """
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return value if _I64_MIN <= value <= _U64_MAX else str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, dict):
+        return {key: exact_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [exact_json(item) for item in value]
+    return value
+
 
 class ExecutorRuntimeError(RuntimeError):
     """Base error for runtime and permit verification failures."""
@@ -121,7 +145,7 @@ class ExecutorRuntime:
             status = (
                 result.status if result.status in {"SUCCEEDED", "FAILED"} else "FAILED"
             )
-            output_json = json.dumps(result.payload)
+            output_json = json.dumps(exact_json(result.payload))
 
             # 3. Complete and sign execution receipt
             return self._executor.complete_execution(

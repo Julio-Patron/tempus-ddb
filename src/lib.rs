@@ -646,6 +646,7 @@ impl SqliteStorage {
     pub fn install_policy(&self, policy_spec: &str) -> Result<String, String> {
         let spec: serde_json::Value = serde_json::from_str(policy_spec)
             .map_err(|e| format!("Policy spec must be valid JSON: {e}"))?;
+        strict_json::reject_inexact_numbers(&spec, "policy")?;
         let signer = self.load_signer()?;
         let bundle = phase3::install_policy(&self.conn, &signer, &spec, b2a::now_micros()?)?;
         b2a::canonicalize(&bundle)

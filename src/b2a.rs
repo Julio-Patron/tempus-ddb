@@ -189,6 +189,7 @@ pub(crate) fn canonicalize(value: &Value) -> Result<String, String> {
 pub(crate) fn parse_canonical(raw: &str, label: &str) -> Result<(Value, String), String> {
     let value: Value =
         serde_json::from_str(raw).map_err(|e| format!("{label} must be valid JSON: {e}"))?;
+    crate::strict_json::reject_inexact_numbers(&value, label)?;
     let canonical = canonicalize(&value)?;
     Ok((value, canonical))
 }
@@ -1746,6 +1747,7 @@ pub(crate) fn commit_outcome(
 
     let mut outcome_value: Value =
         serde_json::from_str(outcome).map_err(|e| format!("outcome must be valid JSON: {e}"))?;
+    crate::strict_json::reject_inexact_numbers(&outcome_value, "outcome")?;
     if let Some(obj) = outcome_value.as_object_mut() {
         obj.insert(
             "executor_id".to_string(),
@@ -2250,6 +2252,13 @@ fn verify_documents(
     };
     if let Some(execution) = execution {
         errors.extend(verify_execution(trust, authorization, execution));
+    }
+    // Numbers that several texts can spell the same way are not "what was signed".
+    if let Some(path) = authorization.and_then(crate::strict_json::find_inexact_number) {
+        errors.push(format!("AUTHORIZATION_NON_EXACT_NUMBER ({path})"));
+    }
+    if let Some(path) = execution.and_then(crate::strict_json::find_inexact_number) {
+        errors.push(format!("EXECUTION_NON_EXACT_NUMBER ({path})"));
     }
     let receipt = authorization
         .and_then(|value| value.get("authorization"))
