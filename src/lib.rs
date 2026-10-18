@@ -626,6 +626,16 @@ impl SqliteStorage {
         b2a::canonicalize(&bundle)
     }
 
+    /// DEVELOPMENT ONLY. Explicitly install a signed policy that allows every action,
+    /// resource and executor for every tenant without its own policy. Nothing installs
+    /// this implicitly: without it (or a real policy) the gate answers BLOCKED with
+    /// `POLICY_NOT_INSTALLED`. Idempotent while the dev policy is active.
+    pub fn install_allow_all_dev_policy(&self) -> Result<String, String> {
+        let signer = self.load_signer()?;
+        let bundle = phase3::install_allow_all_dev_policy(&self.conn, &signer, b2a::now_micros()?)?;
+        b2a::canonicalize(&bundle)
+    }
+
     /// List active and retired policy bundles.
     pub fn list_policies(&self) -> Result<String, String> {
         phase3::list_policies(&self.conn)
@@ -1168,6 +1178,23 @@ impl TempusDDB {
         self.storage
             .install_policy(policy_spec)
             .map_err(PyRuntimeError::new_err)
+    }
+
+    /// DEVELOPMENT ONLY: explicitly install an allow-all policy (emits a UserWarning).
+    #[pyo3(signature = ())]
+    fn install_allow_all_dev_policy(&self, py: Python<'_>) -> PyResult<String> {
+        let bundle = self
+            .storage
+            .install_allow_all_dev_policy()
+            .map_err(PyRuntimeError::new_err)?;
+        PyErr::warn(
+            py,
+            &py.get_type::<pyo3::exceptions::PyUserWarning>(),
+            c"tempus: allow-all development policy installed; every action is ALLOWED. \
+              Do not use in production: install a real policy with install_policy().",
+            1,
+        )?;
+        Ok(bundle)
     }
 
     #[pyo3(signature = ())]

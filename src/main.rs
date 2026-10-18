@@ -110,6 +110,13 @@ enum Commands {
         #[arg(long, default_value = "60")]
         ttl_seconds: u64,
     },
+    /// DEVELOPMENT ONLY: explicitly install a signed allow-all policy
+    InstallAllowAllDev {
+        #[arg(long, default_value = "tempus.db")]
+        db: String,
+        #[arg(long, default_value = "gate.keys.json")]
+        gate_keyfile: String,
+    },
     /// Commit the executor outcome for an allowed action
     CommitOutcome {
         #[arg(long, default_value = "tempus.db")]
@@ -341,6 +348,28 @@ fn main() {
                 Ok(json) => println!("{json}"),
                 Err(error) => {
                     eprintln!("Error requesting action: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::InstallAllowAllDev { db, gate_keyfile } => {
+            let storage = match _tempus_ddb::SqliteStorage::new(db, gate_keyfile) {
+                Ok(storage) => storage,
+                Err(error) => {
+                    eprintln!("Error opening gate: {error}");
+                    std::process::exit(1);
+                }
+            };
+            match storage.install_allow_all_dev_policy() {
+                Ok(json) => {
+                    eprintln!(
+                        "WARNING: allow-all development policy installed; every action is \
+                         ALLOWED. Do not use in production."
+                    );
+                    println!("{json}");
+                }
+                Err(error) => {
+                    eprintln!("Error installing allow-all dev policy: {error}");
                     std::process::exit(1);
                 }
             }

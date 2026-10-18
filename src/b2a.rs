@@ -766,7 +766,6 @@ pub(crate) fn register_agent(
                     params![public_key, registered_at],
                 )
                 .map_err(|e| format!("Failed to establish trusted root: {e}"))?;
-            crate::phase3::ensure_default_policy(&storage.conn, &registrar_key, registered_at)?;
         }
 
         crate::events::record_event(
@@ -1245,10 +1244,28 @@ pub(crate) fn request_action_signed(
 
     let (gate_key, gate_id) = gate_identity(storage)?;
     let issued_at = now_micros()?;
+    // No installed policy is a signed BLOCKED receipt (POLICY_NOT_INSTALLED), never an
+    // implicit allow. Any other policy error (tampering, retired policy) stays an error.
     let policy_bundle =
-        crate::phase3::active_policy(&storage.conn, &gate_key, &fields.tenant_id, issued_at)?;
-    let policy_decision =
-        crate::phase3::evaluate_policy(&policy_bundle, &intent_value, ttl_seconds)?;
+        match crate::phase3::active_policy(&storage.conn, &gate_key, &fields.tenant_id) {
+            Ok(bundle) => Some(bundle),
+            Err(error) if error.starts_with(crate::phase3::POLICY_NOT_INSTALLED_ERROR) => None,
+            Err(error) => return Err(error),
+        };
+    let policy_decision = match &policy_bundle {
+        Some(bundle) => crate::phase3::evaluate_policy(bundle, &intent_value, ttl_seconds)?,
+        None => crate::phase3::no_policy_decision(&intent_value, ttl_seconds)?,
+    };
+    let (policy_version, policy_digest) = match &policy_bundle {
+        Some(bundle) => (
+            string_field(bundle, "policy_version")?,
+            string_field(bundle, "policy_digest")?,
+        ),
+        None => (
+            crate::phase3::NO_POLICY_VERSION.to_string(),
+            crate::phase3::no_policy_digest(),
+        ),
+    };
     let signature_valid =
         verify_message_signature(agent_id, canonical_intent.as_bytes(), agent_signature);
     let agent_state = verify_agent_state(&storage.conn, agent_id)?;
@@ -1291,8 +1308,8 @@ pub(crate) fn request_action_signed(
         "intent_hash": intent_hash,
         "decision": decision,
         "reason_codes": reason_codes,
-        "policy_version": string_field(&policy_bundle, "policy_version")?,
-        "policy_digest": string_field(&policy_bundle, "policy_digest")?,
+        "policy_version": policy_version,
+        "policy_digest": policy_digest,
         "evidence_digest": policy_decision.evidence_digest,
         "executor_constraints": policy_decision.executor_constraints,
         "issued_at": issued_at,
@@ -1314,13 +1331,15 @@ pub(crate) fn request_action_signed(
         .as_object_mut()
         .expect("authorization body is an object")
         .insert("gate_signature".to_string(), Value::String(gate_signature));
-    let result = json!({
+    let mut result = json!({
         "schema_version": AUTHORIZATION_RESULT_SCHEMA,
         "authorization": authorization,
         "intent": intent_value,
         "agent_signature": agent_signature,
-        "policy_bundle": policy_bundle,
     });
+    if let Some(bundle) = &policy_bundle {
+        result["policy_bundle"] = bundle.clone();
+    }
     let authorization_json = canonicalize(&result)?;
 
     storage
@@ -1454,9 +1473,32 @@ fn verify_authorization(storage: &SqliteStorage, result: &Value) -> Vec<String> 
             }
         }
         None => {
-            if authorization.get("policy_version").and_then(Value::as_str)
-                != Some(LEGACY_POLICY_VERSION)
-            {
+            let version = authorization.get("policy_version").and_then(Value::as_str);
+            if version == Some(crate::phase3::NO_POLICY_VERSION) {
+                // A receipt issued with no policy can only ever be a denial.
+                let reasons = authorization.get("reason_codes").and_then(Value::as_array);
+                let denial_only = authorization.get("decision").and_then(Value::as_str)
+                    == Some("BLOCKED")
+                    && authorization.get("policy_digest").and_then(Value::as_str)
+                        == Some(crate::phase3::no_policy_digest().as_str())
+                    && reasons.is_some_and(|values| {
+                        values.len() == 1
+                            && matches!(
+                                values[0].as_str(),
+                                Some(
+                                    "POLICY_NOT_INSTALLED"
+                                        | "INVALID_AGENT_SIGNATURE"
+                                        | "AGENT_NOT_REGISTERED"
+                                        | "AGENT_TENANT_SCOPE_DENIED"
+                                        | "REQUEST_STALE"
+                                        | "REQUEST_FROM_FUTURE"
+                                )
+                            )
+                    });
+                if !denial_only {
+                    errors.push("AUTHORIZATION_NO_POLICY_NOT_DENIED".to_string());
+                }
+            } else if version != Some(LEGACY_POLICY_VERSION) {
                 errors.push("AUTHORIZATION_POLICY_BUNDLE_MISSING".to_string());
             }
         }
