@@ -31,6 +31,30 @@ class HttpAPIError(HttpExecutorError):
         self.status_code = status_code
 
 
+def _reject_dot_segments(path: str) -> None:
+    """Refuse `.` and `..` path segments, however they are spelled.
+
+    The policy matches the text (`https://api.example.com/v1/*`) but the server resolves
+    `/v1/../admin` or `/v1/%2e%2e/admin` to another path. The path is percent-decoded
+    until it stops changing (so `%252e%252e` is caught too), then split on `/`; a
+    backslash (some servers treat it as `/`) or an `;param` after the dots does not hide
+    a segment either.
+    """
+    decoded = path
+    for _ in range(5):
+        again = parse.unquote(decoded)
+        if again == decoded:
+            break
+        decoded = again
+    else:
+        raise HttpExecutorError("Target URL path is encoded too many times")
+    if "\\" in decoded:
+        raise HttpExecutorError("Target URL path must not contain backslashes")
+    for segment in decoded.split("/"):
+        if segment.split(";", 1)[0] in {".", ".."}:
+            raise HttpExecutorError("Target URL path must not contain '.' or '..' segments")
+
+
 def _validate_https_url(
     target_url: str, allowed_domains: Optional[Set[str]] = None
 ) -> str:
@@ -54,6 +78,8 @@ def _validate_https_url(
         raise HttpExecutorError("Target URL must not contain credentials")
     if parsed.scheme != "https" or not parsed.netloc:
         raise HttpExecutorError("Target URL must be a valid HTTPS endpoint")
+
+    _reject_dot_segments(parsed.path)
 
     hostname = (parsed.hostname or "").lower()
     if not hostname:

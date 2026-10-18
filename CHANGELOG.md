@@ -75,6 +75,12 @@
   Limits (README): not pinned through an environment proxy, ports unrestricted (H4),
   allowlisted internal names that resolve to private space are refused too.
 
+- **H3: dot segments in the HTTP path.** `https://api.example.com/v1/../admin` and
+  `/v1/%2e%2e/admin` matched the policy `https://api.example.com/v1/*` and were sent as is.
+  The path is now percent-decoded until stable (max 5 rounds, more is refused) and refused if
+  any segment is `.` or `..` (also `..;x`), or if it contains a backslash. Same rule the
+  GitHub executor already had.
+
 ### Security: audit of "the policy/validation reads X, the executor uses Y"
 Every field an executor uses was traced to what the policy (or the executor's own check)
 evaluates. Policy evaluates: `tenant_id`, `action_type`, `resource` (textual patterns),

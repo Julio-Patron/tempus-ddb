@@ -579,6 +579,9 @@ tempus-http-executor \
   `http(s)://host*` patterns without that slash.
 - **Ports are not restricted** by the policy prefix nor by the allowlist (`:8443` on an
   allowed host is allowed). Pin the port in the policy pattern if it matters.
+- **No `.`/`..` path segments**, plain or percent-encoded (`%2e%2e`, `%252e%252e`, `..%2f`),
+  and no backslashes: the policy matches the URL *text*, so `/v1/../admin` would pass
+  `https://api.example.com/v1/*` while the server serves `/admin`.
 - **The SSRF filter is a guard, not complete protection.** It refuses `localhost`
   names, and any host that is or resolves to a loopback, private, link-local, CGNAT,
   unspecified, multicast or reserved address or a known cloud-metadata address, in any
