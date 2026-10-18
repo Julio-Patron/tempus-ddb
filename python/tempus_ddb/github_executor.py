@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Protocol, Set, Tuple
 from urllib import error, parse, request
 
 from . import __version__
+from ._http import RedirectRefused, open_request
 from .executor_runtime import (
     AmbiguousTransportError,
     ExecutionResult,
@@ -80,7 +81,7 @@ class UrllibGitHubTransport:
         )
         try:
             # The endpoint was validated above as absolute HTTPS with no credentials or query.
-            with request.urlopen(github_request, timeout=30) as response:  # nosec B310
+            with open_request(github_request, timeout=30) as response:  # nosec B310
                 body = response.read().decode("utf-8")
                 parsed = json.loads(body) if body else {}
                 if not isinstance(parsed, dict):
@@ -88,6 +89,8 @@ class UrllibGitHubTransport:
                         "GitHub returned a non-object JSON response"
                     )
                 return parsed
+        except RedirectRefused as exc:
+            raise GitHubAPIError(exc.status_code, str(exc)) from exc
         except error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             try:
@@ -173,7 +176,9 @@ class GitHubActionAdapter:
     ) -> Tuple[str, str, Dict[str, Any], str, str]:
         action_type = self._required_string(intent, "action_type")
         resource = self._required_string(intent, "resource")
-        if not RESOURCE_PATTERN.fullmatch(resource):
+        if not RESOURCE_PATTERN.fullmatch(resource) or {".", ".."} & set(
+            resource.split("/")
+        ):
             raise GitHubExecutorError(
                 "resource must be an exact 'owner/repository' value"
             )

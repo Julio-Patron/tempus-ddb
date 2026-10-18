@@ -1,0 +1,6 @@
+# Pinned toolchain for reproducible local/CI builds.
+# The minimum supported Rust version (MSRV) is `rust-version` in Cargo.toml (1.88).
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

@@ -54,6 +54,6 @@ Every blueprint in this directory strictly adheres to Tempus DDB's foundational 
 
 1. **Strict Credential Isolation**: The agent process never sees, stores, or handles downstream credentials (`GITHUB_TOKEN`, `SLACK_BOT_TOKEN`, `STRIPE_API_KEY`).
 2. **Deterministic Signed Policy**: Evaluated by a dedicated Gate; never inferred by an LLM prompt.
-3. **Single-Use Cryptographic Permits**: Permits are consumed atomically; replay attacks or retry loops fail closed.
-4. **Dual-Signed Tamper-Evident Receipts**: Both the Gate and the isolated Executor sign the outcome with Ed25519; verified offline without trusting logs.
+3. **Single-Use Cryptographic Permits**: Permits are consumed atomically; a reused permit is rejected (single-instance executors; multi-instance consumption is not yet proven).
+4. **Dual-Signed Tamper-Evident Receipts**: Both the Gate and the isolated Executor sign the outcome with Ed25519; a verifier who pins the gate public key checks them offline (`verify-receipt` / `verify-bundle`) without trusting the gate's database. This does not show that nothing was omitted.
 5. **Universal Failure Closing**: Network partitions, missing credentials, or signature mismatches abort execution safely before any external API is touched.

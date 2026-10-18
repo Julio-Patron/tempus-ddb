@@ -7,7 +7,15 @@ use std::time::{Duration, Instant};
 
 pub(crate) const SIGNER_CONFIG_SCHEMA: &str = "tempus.signer-config.v1";
 pub(crate) const POLICY_BUNDLE_SCHEMA: &str = "tempus.policy-bundle.v1";
-pub(crate) const DEFAULT_POLICY_VERSION: &str = "tempus.baseline.v1";
+/// Allow-all policy that gates before 0.5.4 seeded automatically. It is never created or
+/// resolved any more: a database that still carries it is treated as having no policy.
+pub(crate) const LEGACY_BASELINE_POLICY_VERSION: &str = "tempus.baseline.v1";
+/// Prefix of the explicit, opt-in allow-all policy (`install_allow_all_dev_policy`).
+pub(crate) const DEV_ALLOW_ALL_POLICY_PREFIX: &str = "tempus.dev-allow-all.v1";
+/// Sentinel `policy_version` of a BLOCKED receipt issued while no policy was installed.
+pub(crate) const NO_POLICY_VERSION: &str = "tempus.policy-not-installed.v1";
+pub(crate) const POLICY_NOT_INSTALLED_CODE: &str = "POLICY_NOT_INSTALLED";
+pub(crate) const POLICY_NOT_INSTALLED_ERROR: &str = "TEMPUS_POLICY_NOT_INSTALLED";
 pub(crate) const SIGNATURE_ALGORITHM: &str = "Ed25519";
 pub(crate) const IDENTITY_EVENT_SCHEMA: &str = "tempus.identity-lifecycle-event.v1";
 
@@ -170,54 +178,37 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn ensure_default_policy(
+/// Explicit development opt-in: install a signed wildcard policy that allows every
+/// action, resource and executor for every tenant without its own policy. Idempotent
+/// while the dev policy is active; refuses to replace a different active `*` policy.
+pub(crate) fn install_allow_all_dev_policy(
     conn: &Connection,
     signer: &ConfiguredSigner,
     issued_at: u64,
 ) -> Result<Value, String> {
-    if let Some(existing) = policy_by_version(conn, DEFAULT_POLICY_VERSION)? {
-        let is_attested: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM active_policy_attestations WHERE tenant_id = '*' AND policy_version = ?1)",
-                [DEFAULT_POLICY_VERSION],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
-        if !is_attested {
-            let policy_digest = required_policy_string(&existing, "policy_digest")?;
-            let attestation_body = json!({
-                "schema_version": "tempus.active-policy-attestation.v1",
-                "tenant_id": "*",
-                "policy_version": DEFAULT_POLICY_VERSION,
-                "policy_digest": policy_digest,
-                "activated_at": issued_at,
-                "signer": signer.identity().to_json(),
-            });
-            let canonical_attestation = crate::b2a::canonicalize(&attestation_body)?;
-            let attestation_id = crate::b2a::sha256_hex(canonical_attestation.as_bytes());
-            let attestation_sig = signer.sign(
-                &hex::decode(&attestation_id)
-                    .map_err(|e| format!("Invalid attestation digest: {e}"))?,
-            )?;
-            let _ = conn.execute(
-                "INSERT OR REPLACE INTO active_policy_attestations
-                 (tenant_id, policy_version, policy_digest, activated_at, signer_public_key, signature, attestation_json)
-                 VALUES ('*', ?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    DEFAULT_POLICY_VERSION,
-                    policy_digest,
-                    issued_at,
-                    signer.identity().public_key,
-                    attestation_sig,
-                    canonical_attestation,
-                ],
-            );
+    let active: Option<(String, String)> = conn
+        .query_row(
+            "SELECT policy_version, bundle_json FROM policy_bundles
+             WHERE tenant_id = '*' AND retired_at IS NULL",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to inspect active wildcard policy: {e}"))?;
+    if let Some((version, bundle_json)) = active {
+        if version.starts_with(DEV_ALLOW_ALL_POLICY_PREFIX) {
+            return serde_json::from_str(&bundle_json)
+                .map_err(|e| format!("Stored policy bundle is invalid JSON: {e}"));
         }
-        return verify_policy_bundle(&existing, None).map(|_| existing);
+        if version != LEGACY_BASELINE_POLICY_VERSION {
+            return Err(format!(
+                "TEMPUS_DEV_ALLOW_ALL_REFUSED: an explicit wildcard policy '{version}' is active"
+            ));
+        }
     }
     let spec = json!({
         "schema_version": POLICY_BUNDLE_SCHEMA,
-        "policy_version": DEFAULT_POLICY_VERSION,
+        "policy_version": format!("{DEV_ALLOW_ALL_POLICY_PREFIX}.{issued_at}"),
         "tenant_id": "*",
         "constraints": {
             "allowed_action_types": ["*"],
@@ -229,6 +220,29 @@ pub(crate) fn ensure_default_policy(
         }
     });
     install_policy(conn, signer, &spec, issued_at)
+}
+
+/// Decision recorded when no policy applies: always BLOCKED with a closed reason code.
+pub(crate) fn no_policy_decision(
+    intent: &Value,
+    ttl_seconds: u64,
+) -> Result<PolicyDecision, String> {
+    Ok(PolicyDecision {
+        decision: "BLOCKED",
+        reason_codes: vec![POLICY_NOT_INSTALLED_CODE.to_string()],
+        evidence_digest: digest_json(&json!({
+            "schema_version": "tempus.policy-evidence.v1",
+            "policy_version": NO_POLICY_VERSION,
+            "intent": intent,
+            "ttl_seconds": ttl_seconds,
+        }))?,
+        executor_constraints: json!({ "allowed_executors": [] }),
+    })
+}
+
+/// Digest bound into receipts issued while no policy was installed.
+pub(crate) fn no_policy_digest() -> String {
+    crate::b2a::sha256_hex(NO_POLICY_VERSION.as_bytes())
 }
 
 pub(crate) fn install_policy(
@@ -358,10 +372,7 @@ pub(crate) fn active_policy(
     conn: &Connection,
     signer: &ConfiguredSigner,
     tenant_id: &str,
-    now: u64,
 ) -> Result<Value, String> {
-    ensure_default_policy(conn, signer, now)?;
-
     // 1. Check for signed active policy attestation for this specific tenant
     let row = conn
         .query_row(
@@ -383,6 +394,7 @@ pub(crate) fn active_policy(
         .optional()
         .map_err(|e| format!("Failed to resolve active policy: {e}"))?;
 
+    let row = row.filter(|(version, ..)| version != LEGACY_BASELINE_POLICY_VERSION);
     if let Some((_version, digest, signature, attestation_json, bundle_json)) = row {
         let (_attestation_val, canonical_att) =
             crate::b2a::parse_canonical(&attestation_json, "active policy attestation")?;
@@ -443,6 +455,8 @@ pub(crate) fn active_policy(
         .optional()
         .map_err(|e| format!("Failed to resolve fallback policy: {e}"))?;
 
+    // A baseline seeded by an older gate is ignored: it is not an explicit policy.
+    let row_star = row_star.filter(|(version, ..)| version != LEGACY_BASELINE_POLICY_VERSION);
     if let Some((_version, digest, signature, attestation_json, bundle_json)) = row_star {
         let (_attestation_val, canonical_att) =
             crate::b2a::parse_canonical(&attestation_json, "active policy attestation")?;
@@ -465,7 +479,11 @@ pub(crate) fn active_policy(
         return Ok(bundle);
     }
 
-    Err("TEMPUS_POLICY_NOT_FOUND: no active policy applies".to_string())
+    Err(format!(
+        "{POLICY_NOT_INSTALLED_ERROR}: no policy is installed for tenant '{tenant_id}'; \
+         install one with `tempus install-policy --policy FILE` (development only: \
+         `tempus install-policy --allow-all-dev`)"
+    ))
 }
 
 pub(crate) fn list_policies(conn: &Connection) -> Result<String, String> {
@@ -735,22 +753,80 @@ fn pattern_list<'a>(value: Option<&'a Value>, field: &str) -> Result<Vec<&'a str
         .collect()
 }
 
+/// The one reading of an intent's `money` that the policy evaluates and the executors use.
+///
+/// Amounts are minor units with two decimals. `amount` (decimal string) and `amount_minor`
+/// (unsigned integer) are two spellings of one value, and `currency` and `asset` are two
+/// names for one field: if both spellings are present they must agree, and a field of the
+/// wrong type is an error rather than being skipped. Otherwise the policy could evaluate
+/// one spelling while an executor sent the other (`amount: "99999.00", amount_minor: 1`).
+pub(crate) fn validate_money(money: &Value) -> Result<(u64, String), String> {
+    let name = |field: &str| -> Result<Option<&str>, String> {
+        match money.get(field) {
+            None => Ok(None),
+            Some(Value::String(value)) if !value.is_empty() => Ok(Some(value.as_str())),
+            Some(_) => Err(format!(
+                "TEMPUS_INVALID_CONTRACT: money.{field} must be a non-empty string"
+            )),
+        }
+    };
+    let currency = match (name("currency")?, name("asset")?) {
+        (Some(currency), Some(asset)) if currency != asset => {
+            return Err(
+                "TEMPUS_INVALID_CONTRACT: money.currency and money.asset must be the same value"
+                    .to_string(),
+            )
+        }
+        (Some(value), _) | (None, Some(value)) => value.to_string(),
+        (None, None) => return Err("TEMPUS_INVALID_CONTRACT: money.asset is required".to_string()),
+    };
+    // The executor pays this value as written: when present it must be a real string.
+    // (It is only *required* here when `allowed_beneficiaries` constrains it.)
+    if let Some(beneficiary) = money.get("beneficiary") {
+        if !matches!(beneficiary, Value::String(text) if !text.is_empty()) {
+            return Err(
+                "TEMPUS_INVALID_CONTRACT: money.beneficiary must be a non-empty string".to_string(),
+            );
+        }
+    }
+    let from_text = match money.get("amount") {
+        None => None,
+        Some(Value::String(text)) => Some(parse_minor_units(text)?),
+        Some(_) => {
+            return Err(
+                "TEMPUS_INVALID_CONTRACT: money.amount must be a decimal string".to_string(),
+            )
+        }
+    };
+    let from_minor = match money.get("amount_minor") {
+        None => None,
+        Some(value) => Some(value.as_u64().ok_or_else(|| {
+            "TEMPUS_INVALID_CONTRACT: money.amount_minor must be an unsigned integer".to_string()
+        })?),
+    };
+    let amount = match (from_text, from_minor) {
+        (Some(text), Some(minor)) if text != minor => {
+            return Err(format!(
+                "TEMPUS_INVALID_CONTRACT: money.amount ({text} minor units) and \
+                 money.amount_minor ({minor}) disagree"
+            ))
+        }
+        (Some(value), _) | (None, Some(value)) => value,
+        (None, None) => {
+            return Err(
+                "TEMPUS_INVALID_CONTRACT: money.amount must be a decimal string".to_string(),
+            )
+        }
+    };
+    Ok((amount, currency))
+}
+
 fn money_allowed(
     constraints: &serde_json::Map<String, Value>,
     money: &Value,
 ) -> Result<bool, String> {
-    let currency = money
-        .get("currency")
-        .or_else(|| money.get("asset"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| "TEMPUS_INVALID_CONTRACT: money.asset is required".to_string())?;
-    let amount = if let Some(amount) = money.get("amount_minor").and_then(Value::as_u64) {
-        amount
-    } else {
-        parse_minor_units(money.get("amount").and_then(Value::as_str).ok_or_else(|| {
-            "TEMPUS_INVALID_CONTRACT: money.amount must be a decimal string".to_string()
-        })?)?
-    };
+    let (amount, currency) = validate_money(money)?;
+    let currency = currency.as_str();
     if let Some(currencies) = constraints.get("allowed_currencies") {
         if !matches_patterns(Some(currencies), currency)? {
             return Ok(false);
@@ -772,9 +848,12 @@ fn money_allowed(
 }
 
 fn parse_minor_units(value: &str) -> Result<u64, String> {
+    // A decimal point must be followed by one or two digits ("5." is not "5"): executors
+    // read this same grammar, and a gate that accepted more would burn permits they refuse.
     let (whole, fractional) = value.split_once('.').unwrap_or((value, ""));
     if whole.is_empty()
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.contains('.') && fractional.is_empty())
         || fractional.len() > 2
         || !fractional.bytes().all(|byte| byte.is_ascii_digit())
     {
@@ -1180,6 +1259,53 @@ fn base64_value(byte: u8) -> Option<u8> {
 mod tests {
     use super::*;
     use rand::rngs::OsRng;
+
+    #[test]
+    fn money_has_one_reading_for_policy_and_executors() {
+        let ok = |money: Value| validate_money(&money).unwrap();
+        assert_eq!(
+            ok(json!({"amount": "25.5", "asset": "USD"})),
+            (2550, "USD".into())
+        );
+        assert_eq!(
+            ok(json!({"amount_minor": 2550, "currency": "USD"})),
+            (2550, "USD".into())
+        );
+        assert_eq!(
+            ok(json!({"amount": "1.00", "asset": "USD", "beneficiary": "alice"})),
+            (100, "USD".into())
+        );
+        assert_eq!(
+            ok(json!({"amount": "25.50", "amount_minor": 2550, "currency": "USD", "asset": "USD"})),
+            (2550, "USD".into())
+        );
+        for money in [
+            json!({"amount": "1.00", "asset": "USD", "beneficiary": null}),
+            json!({"amount": "1.00", "asset": "USD", "beneficiary": ""}),
+            json!({"amount": "1.00", "asset": "USD", "beneficiary": 7}),
+            json!({"amount": "1.00", "asset": "USD", "beneficiary": ["a"]}),
+            json!({"amount": "5.", "asset": "USD"}),
+            json!({"amount": "0.", "asset": "USD"}),
+            json!({"amount": ".5", "asset": "USD"}),
+            json!({"amount": "5.5.", "asset": "USD"}),
+            json!({"amount": "99999.00", "amount_minor": 1, "asset": "USD"}),
+            json!({"amount": "1.00", "currency": "USD", "asset": "EUR"}),
+            json!({"amount": "1.00", "currency": "USD", "asset": "usd"}),
+            json!({"amount": "1.00", "amount_minor": "100", "asset": "USD"}),
+            json!({"amount": "1.00", "amount_minor": -100, "asset": "USD"}),
+            json!({"amount": 1, "amount_minor": 100, "asset": "USD"}),
+            json!({"amount": "1.00", "currency": 1, "asset": "USD"}),
+            json!({"amount": "1.00", "asset": ""}),
+            json!({"asset": "USD"}),
+            json!({"amount": "1.00"}),
+        ] {
+            let error = validate_money(&money).unwrap_err();
+            assert!(
+                error.starts_with("TEMPUS_INVALID_CONTRACT"),
+                "{money}: {error}"
+            );
+        }
+    }
 
     struct TestRemoteSigner {
         identity: SignerIdentity,

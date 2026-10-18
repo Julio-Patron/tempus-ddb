@@ -12,6 +12,9 @@ use wasm_bindgen::prelude::*;
 mod b2a;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod strict_json;
+
+#[cfg(not(target_arch = "wasm32"))]
 mod phase3;
 #[cfg(not(target_arch = "wasm32"))]
 use phase3::SignerBackend;
@@ -617,12 +620,45 @@ impl SqliteStorage {
         b2a::verify_trace(self, action_id)
     }
 
+    /// Verify an action trace against a gate public key pinned by the verifier
+    /// (and optionally pinned executor keys). Does not trust the database's
+    /// own trusted root.
+    pub fn verify_trace_pinned(
+        &self,
+        action_id: &str,
+        gate_public_key: &str,
+        executor_public_keys: &[String],
+    ) -> Result<String, String> {
+        b2a::verify_trace_pinned(self, action_id, gate_public_key, executor_public_keys)
+    }
+
+    /// Export a self-contained evidence bundle for one action (see
+    /// `tempus.evidence-bundle.v1`). Contains no private key material.
+    pub fn export_bundle(
+        &self,
+        action_id: &str,
+        max_stream_events: Option<u64>,
+    ) -> Result<String, String> {
+        b2a::export_bundle(self, action_id, max_stream_events)
+    }
+
     /// Install and activate a deterministic policy bundle signed by the gate.
     pub fn install_policy(&self, policy_spec: &str) -> Result<String, String> {
         let spec: serde_json::Value = serde_json::from_str(policy_spec)
-            .map_err(|e| format!("Policy spec must be valid JSON: {e}"))?;
+            .map_err(|e| strict_json::parse_error_message("Policy spec", &e))?;
+        strict_json::reject_inexact_numbers(&spec, "policy")?;
         let signer = self.load_signer()?;
         let bundle = phase3::install_policy(&self.conn, &signer, &spec, b2a::now_micros()?)?;
+        b2a::canonicalize(&bundle)
+    }
+
+    /// DEVELOPMENT ONLY. Explicitly install a signed policy that allows every action,
+    /// resource and executor for every tenant without its own policy. Nothing installs
+    /// this implicitly: without it (or a real policy) the gate answers BLOCKED with
+    /// `POLICY_NOT_INSTALLED`. Idempotent while the dev policy is active.
+    pub fn install_allow_all_dev_policy(&self) -> Result<String, String> {
+        let signer = self.load_signer()?;
+        let bundle = phase3::install_allow_all_dev_policy(&self.conn, &signer, b2a::now_micros()?)?;
         b2a::canonicalize(&bundle)
     }
 
@@ -1156,10 +1192,35 @@ impl TempusDDB {
             .map_err(PyRuntimeError::new_err)
     }
 
-    #[pyo3(signature = (action_id,))]
-    fn verify_trace(&self, action_id: &str) -> PyResult<String> {
+    /// Verify an action trace. With `gate_public_key` the gate key is pinned by
+    /// the caller and the database's own trusted root is not used; without it the
+    /// result is marked `"independent": false`.
+    #[pyo3(signature = (action_id, gate_public_key=None, executor_public_keys=None))]
+    fn verify_trace(
+        &self,
+        action_id: &str,
+        gate_public_key: Option<&str>,
+        executor_public_keys: Option<Vec<String>>,
+    ) -> PyResult<String> {
+        match gate_public_key {
+            Some(gate) => self.storage.verify_trace_pinned(
+                action_id,
+                gate,
+                &executor_public_keys.unwrap_or_default(),
+            ),
+            None if executor_public_keys.is_some() => {
+                Err("executor_public_keys requires gate_public_key".to_string())
+            }
+            None => self.storage.verify_trace(action_id),
+        }
+        .map_err(PyRuntimeError::new_err)
+    }
+
+    /// Export one action as a self-contained evidence bundle (JSON string).
+    #[pyo3(signature = (action_id, max_stream_events=None))]
+    fn export_bundle(&self, action_id: &str, max_stream_events: Option<u64>) -> PyResult<String> {
         self.storage
-            .verify_trace(action_id)
+            .export_bundle(action_id, max_stream_events)
             .map_err(PyRuntimeError::new_err)
     }
 
@@ -1168,6 +1229,23 @@ impl TempusDDB {
         self.storage
             .install_policy(policy_spec)
             .map_err(PyRuntimeError::new_err)
+    }
+
+    /// DEVELOPMENT ONLY: explicitly install an allow-all policy (emits a UserWarning).
+    #[pyo3(signature = ())]
+    fn install_allow_all_dev_policy(&self, py: Python<'_>) -> PyResult<String> {
+        let bundle = self
+            .storage
+            .install_allow_all_dev_policy()
+            .map_err(PyRuntimeError::new_err)?;
+        PyErr::warn(
+            py,
+            &py.get_type::<pyo3::exceptions::PyUserWarning>(),
+            c"tempus: allow-all development policy installed; every action is ALLOWED. \
+              Do not use in production: install a real policy with install_policy().",
+            1,
+        )?;
+        Ok(bundle)
     }
 
     #[pyo3(signature = ())]
@@ -1247,6 +1325,40 @@ impl TempusDDB {
     }
 }
 
+/// Verify a standalone receipt (trace, permit or outcome JSON) with no database,
+/// against a gate public key pinned by the verifier.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn verify_receipt(
+    receipt_json: &str,
+    gate_public_key: &str,
+    executor_public_keys: &[String],
+) -> Result<String, String> {
+    b2a::verify_receipt_pinned(receipt_json, gate_public_key, executor_public_keys)
+}
+
+/// Verify an evidence bundle with no database, against a pinned gate public key.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn verify_bundle(
+    bundle_json: &str,
+    gate_public_key: &str,
+    executor_public_keys: &[String],
+) -> Result<String, String> {
+    b2a::verify_bundle_pinned(bundle_json, gate_public_key, executor_public_keys)
+}
+
+/// Verify a checkpoint and its event stream with no database. The signer must
+/// equal `expected_public_key`, which the verifier supplies out of band.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn verify_checkpoint(
+    checkpoint_json: &str,
+    stream_json: &str,
+    expected_public_key: &str,
+) -> Result<String, String> {
+    let expected = expected_public_key.trim().to_ascii_lowercase();
+    b2a::decode_public_key(&expected).map_err(|e| format!("gate public key: {e}"))?;
+    events::verify_checkpoint_stream(checkpoint_json, stream_json, Some(&expected))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn generate_keypair(output: &str) -> Result<String, String> {
     use ed25519_dalek::SigningKey;
@@ -1297,9 +1409,62 @@ pub fn gen_keys(output: String) -> PyResult<String> {
     generate_keypair(&output).map_err(PyRuntimeError::new_err)
 }
 
+/// Verify a standalone receipt (trace, permit or outcome JSON) without a database.
+#[cfg(not(target_arch = "wasm32"))]
+#[pyfunction]
+#[pyo3(name = "verify_receipt", signature = (receipt_json, gate_public_key, executor_public_keys=None))]
+#[allow(clippy::useless_conversion)]
+pub fn py_verify_receipt(
+    receipt_json: &str,
+    gate_public_key: &str,
+    executor_public_keys: Option<Vec<String>>,
+) -> PyResult<String> {
+    verify_receipt(
+        receipt_json,
+        gate_public_key,
+        &executor_public_keys.unwrap_or_default(),
+    )
+    .map_err(PyRuntimeError::new_err)
+}
+
+/// Verify an evidence bundle without a database, against a pinned gate key.
+#[cfg(not(target_arch = "wasm32"))]
+#[pyfunction]
+#[pyo3(name = "verify_bundle", signature = (bundle_json, gate_public_key, executor_public_keys=None))]
+#[allow(clippy::useless_conversion)]
+pub fn py_verify_bundle(
+    bundle_json: &str,
+    gate_public_key: &str,
+    executor_public_keys: Option<Vec<String>>,
+) -> PyResult<String> {
+    verify_bundle(
+        bundle_json,
+        gate_public_key,
+        &executor_public_keys.unwrap_or_default(),
+    )
+    .map_err(PyRuntimeError::new_err)
+}
+
+/// Verify a checkpoint and event stream without a database, against a pinned key.
+#[cfg(not(target_arch = "wasm32"))]
+#[pyfunction]
+#[pyo3(name = "verify_checkpoint", signature = (checkpoint_json, stream_json, expected_public_key))]
+#[allow(clippy::useless_conversion)]
+pub fn py_verify_checkpoint(
+    checkpoint_json: &str,
+    stream_json: &str,
+    expected_public_key: &str,
+) -> PyResult<String> {
+    verify_checkpoint(checkpoint_json, stream_json, expected_public_key)
+        .map_err(PyRuntimeError::new_err)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[pymodule]
 fn _tempus_ddb(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(py_verify_receipt, m)?)?;
+    m.add_function(wrap_pyfunction!(py_verify_bundle, m)?)?;
+    m.add_function(wrap_pyfunction!(py_verify_checkpoint, m)?)?;
     m.add_class::<TempusDDB>()?;
     m.add_class::<TempusExecutor>()?;
     m.add_function(wrap_pyfunction!(gen_keys, m)?)?;

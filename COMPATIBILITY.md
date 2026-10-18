@@ -10,7 +10,7 @@ than its convenience APIs because authorization receipts may outlive a deploymen
   them safely. Required-field removal, semantic reinterpretation, or an algorithm change
   requires a new schema version.
 - Unknown schemas, signature algorithms, signer identities, policy versions, and reason
-  codes fail closed at an execution boundary.
+  codes are rejected at an execution boundary; they are never treated as allowed.
 - Ed25519 remains the only algorithm for v1 receipts. A provider that cannot produce
   compatible Ed25519 signatures requires v2 contracts.
 
