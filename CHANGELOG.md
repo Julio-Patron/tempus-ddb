@@ -62,6 +62,19 @@
   to it. Informational (documented in the README): ports are not restricted by the policy
   prefix or the allowlist (H4).
 
+- **H2: SSRF filter by address, with pinned connections.** Without an allowlist the executor
+  connected to `127.1`, `2130706433`, `0x7f000001`, `2852039166`/`0xa9fea9fe`
+  (169.254.169.254), `10.1`, `192.168.1`, `https://0/`, `100.64.0.1`: only canonical IPs were
+  checked. Hosts are now read like the OS resolver reads them (`inet_aton`), and loopback,
+  private, link-local, CGNAT, unspecified, multicast, reserved and cloud-metadata addresses
+  (AWS/GCP/Azure/Alibaba/Oracle) are refused also through IPv6 (only global unicast is
+  accepted; IPv4-mapped and NAT64 are judged by the IPv4 inside; 6to4/Teredo refused).
+  Names are resolved once, every answer must be allowed, and the socket connects to the
+  validated IP (DNS-rebinding safe; TLS verifies the name). Percent escapes in the host and
+  invalid ports are refused. A wildcard allowlist no longer opens blocked addresses.
+  Limits (README): not pinned through an environment proxy, ports unrestricted (H4),
+  allowlisted internal names that resolve to private space are refused too.
+
 ### Security: audit of "the policy/validation reads X, the executor uses Y"
 Every field an executor uses was traced to what the policy (or the executor's own check)
 evaluates. Policy evaluates: `tenant_id`, `action_type`, `resource` (textual patterns),

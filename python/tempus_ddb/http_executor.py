@@ -1,13 +1,17 @@
 """Credential-isolated HTTP/Webhook executor for Tempus permits."""
 
-import ipaddress
 import json
 import os
 from typing import Any, Dict, Optional, Protocol, Set
 from urllib import error, parse, request
 
 from . import __version__
-from ._http import RedirectRefused, open_request
+from ._http import (
+    DestinationRefused,
+    RedirectRefused,
+    check_host_literal,
+    open_request,
+)
 from .executor_runtime import (
     AmbiguousTransportError,
     ExecutionResult,
@@ -55,22 +59,18 @@ def _validate_https_url(
     if not hostname:
         raise HttpExecutorError("Target URL must contain a valid hostname")
 
-    # SSRF protection: reject localhost and private IP networks
-    if hostname in {"localhost", "localhost.localdomain"}:
-        raise HttpExecutorError("Target URL host cannot be localhost")
-
+    # SSRF filter (see _http.py): names/IP spellings that are refused without any lookup.
+    # Resolution is checked again, and pinned, when the connection is made.
+    if "%" in hostname:
+        raise HttpExecutorError("Target URL host must not contain percent escapes")
     try:
-        ip = ipaddress.ip_address(hostname)
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-        ):
-            raise HttpExecutorError(f"Target URL resolves to disallowed IP: {ip}")
+        parsed.port
     except ValueError:
-        pass
+        raise HttpExecutorError("Target URL has an invalid port") from None
+    try:
+        check_host_literal(hostname)
+    except DestinationRefused as exc:
+        raise HttpExecutorError(f"Target URL destination refused: {exc}") from exc
 
     if allowed_domains is not None:
         matched = any(
@@ -113,7 +113,7 @@ class UrllibHttpTransport:
         )
         req = request.Request(url, data=data, headers=headers, method=method)
         try:
-            with open_request(req, timeout=30) as response:  # nosec B310
+            with open_request(req, timeout=30, pinned=True) as response:  # nosec B310
                 raw = response.read().decode("utf-8")
                 try:
                     return (
@@ -125,6 +125,8 @@ class UrllibHttpTransport:
                     return {"body": raw, "http_status": response.status}
         except RedirectRefused as exc:
             raise HttpAPIError(exc.status_code, str(exc)) from exc
+        except DestinationRefused as exc:
+            raise HttpExecutorError(f"Target URL destination refused: {exc}") from exc
         except error.HTTPError as exc:
             err_body = exc.read().decode("utf-8", errors="replace")
             raise HttpAPIError(exc.code, f"HTTP {exc.code}: {err_body}") from exc

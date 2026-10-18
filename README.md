@@ -579,6 +579,19 @@ tempus-http-executor \
   `http(s)://host*` patterns without that slash.
 - **Ports are not restricted** by the policy prefix nor by the allowlist (`:8443` on an
   allowed host is allowed). Pin the port in the policy pattern if it matters.
+- **The SSRF filter is a guard, not complete protection.** It refuses `localhost`
+  names, and any host that is or resolves to a loopback, private, link-local, CGNAT,
+  unspecified, multicast or reserved address or a known cloud-metadata address, in any
+  spelling (`127.1`, `2130706433`, `0x7f000001`, `[::ffff:127.0.0.1]`, ...). The name is
+  resolved once, every answer is checked and the connection goes to that validated IP
+  (TLS still verifies the certificate for the name), which closes DNS rebinding for direct
+  connections. It does **not** cover: ports (above); an `HTTPS_PROXY`/`https_proxy` in the
+  environment (the proxy resolves the target, so the name is checked but not pinned, and
+  the proxy's own reachability is yours to restrict); internal names you put in the
+  allowlist (they are refused too if they resolve to private space; this executor has no
+  opt-out); public services that are themselves open relays; or a compromised DNS that
+  answers consistently with a public attacker address. Keep network egress rules as the
+  real boundary.
 - The executor sends exactly the URL the policy matched, with no whitespace, control
   characters, backslashes or credentials in it.
 
