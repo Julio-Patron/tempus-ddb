@@ -63,6 +63,9 @@ module-name = "tempus_ddb._tempus_ddb"
 pythonpath = ["python"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+filterwarnings = [
+    "ignore:tempus. allow-all development policy installed:UserWarning",
+]
 
 [tool.ruff]
 target-version = "py310"

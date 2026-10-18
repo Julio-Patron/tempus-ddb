@@ -5,6 +5,7 @@ import shutil
 import stat
 import sys
 import time
+import warnings
 
 from . import __version__
 from ._tempus_ddb import TempusDDB, gen_keys
@@ -38,6 +39,24 @@ def _load_json_argument(value, label):
     return json.dumps(parsed, separators=(",", ":"), sort_keys=True)
 
 
+ALLOW_ALL_DEV_WARNING = (
+    "WARNING: --allow-all-dev installed a development policy that ALLOWS EVERY ACTION "
+    "for every tenant without its own policy. Never use it in production; install a "
+    "real policy with 'tempus install-policy --policy FILE'."
+)
+NON_PRODUCTION_POLICY_PREFIXES = ("tempus.dev-allow-all.v1", "tempus.baseline.v1")
+
+
+def _install_allow_all_dev(db):
+    """Explicit development opt-in; the gate never installs this by itself."""
+    with warnings.catch_warnings():
+        # The CLI prints its own visible warning below.
+        warnings.simplefilter("ignore", UserWarning)
+        bundle = db.install_allow_all_dev_policy()
+    print(ALLOW_ALL_DEV_WARNING, file=sys.stderr)
+    return bundle
+
+
 def run_init(args):
     db_path, keyfile = _resolve_paths(args)
 
@@ -69,6 +88,22 @@ def run_init(args):
         print("[OK] Tempus DDB ready.")
         print(f"  Keys:  {keyfile}")
         print(f"  DB:    {db_path}")
+        if getattr(args, "allow_all_dev", False):
+            _install_allow_all_dev(db)
+            print("  Policy: allow-all DEVELOPMENT policy (explicit --allow-all-dev)")
+        elif not any(
+            policy.get("status") == "ACTIVE"
+            and not policy.get("policy_version", "").startswith(
+                NON_PRODUCTION_POLICY_PREFIXES
+            )
+            for policy in json.loads(db.list_policies())
+        ):
+            print(
+                "  Policy: none installed - the gate DENIES every action "
+                "(POLICY_NOT_INSTALLED) until you run:\n"
+                "          tempus install-policy --policy FILE   "
+                "(development only: tempus install-policy --allow-all-dev)"
+            )
     except Exception as e:
         print(f"[ERROR] Failed to initialize database: {e}", file=sys.stderr)
         sys.exit(1)
@@ -449,6 +484,21 @@ def _gate(args):
 def run_install_policy(args):
     """Install a signed deterministic policy and make it active for its tenant."""
     try:
+        if args.allow_all_dev:
+            if args.policy:
+                print(
+                    "[ERROR] --allow-all-dev cannot be combined with --policy",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print(json.dumps(json.loads(_install_allow_all_dev(_gate(args))), indent=2))
+            return
+        if not args.policy:
+            print(
+                "[ERROR] Provide --policy FILE (or --allow-all-dev for local development)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         spec = _load_json_argument(args.policy, "policy")
         print(json.dumps(json.loads(_gate(args).install_policy(spec)), indent=2))
     except Exception as exc:
@@ -638,11 +688,24 @@ def run_doctor(args):
             )
             policies = json.loads(gate.list_policies())
             active = [policy for policy in policies if policy.get("status") == "ACTIVE"]
-            add(
-                "active_policy",
-                "PASS" if active else "FAIL",
-                f"active={len(active)}",
-            )
+            dev_only = [
+                policy
+                for policy in active
+                if policy.get("policy_version", "").startswith(
+                    NON_PRODUCTION_POLICY_PREFIXES
+                )
+            ]
+            if not active:
+                add("active_policy", "FAIL", "none installed: every action is denied")
+            elif dev_only:
+                add(
+                    "active_policy",
+                    "FAIL",
+                    "development allow-all policy is active: "
+                    + ", ".join(p["policy_version"] for p in dev_only),
+                )
+            else:
+                add("active_policy", "PASS", f"active={len(active)}")
         except Exception as exc:
             add("database", "FAIL", str(exc))
     if args.github:
@@ -696,7 +759,12 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=False)
 
     # init
-    subparsers.add_parser("init", help="Initialize keys and database")
+    init_p = subparsers.add_parser("init", help="Initialize keys and database")
+    init_p.add_argument(
+        "--allow-all-dev",
+        action="store_true",
+        help="DEVELOPMENT ONLY: also install an allow-all policy (default is deny-all)",
+    )
 
     keygen_p = subparsers.add_parser(
         "keygen", help="Generate a workload Ed25519 keypair"
@@ -788,7 +856,12 @@ def main():
     install_policy_p = subparsers.add_parser(
         "install-policy", help="Sign and activate a deterministic policy bundle"
     )
-    install_policy_p.add_argument("--policy", required=True, help="Policy JSON or file")
+    install_policy_p.add_argument("--policy", help="Policy JSON or file")
+    install_policy_p.add_argument(
+        "--allow-all-dev",
+        action="store_true",
+        help="DEVELOPMENT ONLY: install a signed policy that allows every action",
+    )
     subparsers.add_parser(
         "list-policies", help="List active and retired signed policies"
     )

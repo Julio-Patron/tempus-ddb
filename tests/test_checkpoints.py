@@ -30,6 +30,7 @@ def _setup_gate(tmpdir, tenant_id="tenant-checkpoint-test"):
     gate.register_agent(
         gate_id, "gate-root", json.dumps({"can_delegate": True, "tenant_id": tenant_id})
     )
+    gate.install_allow_all_dev_policy()  # explicit dev opt-in (default is deny-all)
     gate.register_agent(agent_id, "agent-coder", json.dumps({"tenant_id": tenant_id}))
     gate.register_agent(exec_id, "exec-runner", json.dumps({"tenant_id": tenant_id}))
 

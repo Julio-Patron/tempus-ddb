@@ -190,8 +190,9 @@ def test_cli_status_shows_helpful_next_steps(tmp_path):
 def test_cli_b2a_authorization_execution_flow(tmp_path):
     from tempus_ddb import gen_keys
 
-    code, out, err = run_cli(["init"], cwd=tmp_path)
+    code, out, err = run_cli(["init", "--allow-all-dev"], cwd=tmp_path)
     assert code == 0, out + err
+    assert "ALLOWS EVERY ACTION" in err
     agent_keyfile = tmp_path / "agent.keys.json"
     executor_keyfile = tmp_path / "executor.keys.json"
     gen_keys(str(agent_keyfile))
@@ -270,7 +271,32 @@ def test_cli_b2a_authorization_execution_flow(tmp_path):
 def test_cli_phase3_doctor_conformance_policy_and_identity_lifecycle(tmp_path):
     code, out, err = run_cli(["init"], cwd=tmp_path)
     assert code == 0, out + err
+    assert "POLICY_NOT_INSTALLED" in out
 
+    # No policy yet: the gate denies everything and doctor refuses to call it ready.
+    code, out, err = run_cli(["doctor", "--json"], cwd=tmp_path)
+    assert code == 1, out + err
+    checks = {c["name"]: c for c in json.loads(out)["checks"]}
+    assert checks["active_policy"]["status"] == "FAIL"
+    assert json.loads(run_cli(["list-policies"], cwd=tmp_path)[1]) == []
+
+    policy = {
+        "schema_version": "tempus.policy-bundle.v1",
+        "policy_version": "acme-v1",
+        "tenant_id": "acme",
+        "constraints": {
+            "allowed_action_types": ["*"],
+            "allowed_resources": ["*"],
+            "allowed_executors": ["*"],
+            "max_ttl_seconds": 60,
+            "max_input_bytes": 16384,
+            "allowed_currencies": ["USD"],
+        },
+    }
+    code, out, err = run_cli(
+        ["install-policy", "--policy", json.dumps(policy)], cwd=tmp_path
+    )
+    assert code == 0, out + err
     code, out, err = run_cli(["doctor", "--json"], cwd=tmp_path)
     assert code == 0, out + err
     assert json.loads(out)["status"] == "PASS"
@@ -330,7 +356,7 @@ def test_cli_phase3_doctor_conformance_policy_and_identity_lifecycle(tmp_path):
 
 def test_cli_checkpoint_workflow(tmp_path):
     # 1. Initialize
-    code, out, err = run_cli(["init"], cwd=tmp_path)
+    code, out, err = run_cli(["init", "--allow-all-dev"], cwd=tmp_path)
     assert code == 0, out + err
 
     # 2. Keygen for agent and executor
@@ -478,3 +504,83 @@ def test_cli_checkpoint_workflow(tmp_path):
     ver_tampered = json.loads(out)
     assert ver_tampered["status"] == "INVALID"
     assert "ERR_SEQUENCE_GAP" in ver_tampered["reason_code"]
+
+
+def _cli_intent(agent_id, key, tenant="acme"):
+    return json.dumps(
+        {
+            "schema_version": "tempus.action-intent.v1",
+            "tenant_id": tenant,
+            "agent_id": agent_id,
+            "idempotency_key": key,
+            "action_type": "github.delete_repo",
+            "resource": "evil/x",
+            "requested_at": time.time_ns() // 1_000,
+            "input": {},
+        }
+    )
+
+
+def _cli_gate_with_agent(tmp_path, *init_flags):
+    code, out, err = run_cli(["init", *init_flags], cwd=tmp_path)
+    assert code == 0, out + err
+    run_cli(["keygen", "--output", "agent.keys.json"], cwd=tmp_path)
+    agent_id = json.loads((tmp_path / "agent.keys.json").read_text())["public_key"]
+    code, out, err = run_cli(
+        ["register-agent", "--alias", "a", "--agent-keyfile", "agent.keys.json"],
+        cwd=tmp_path,
+    )
+    assert code == 0, out + err
+    return agent_id
+
+
+def test_cli_default_deny_blocks_without_policy(tmp_path):
+    agent_id = _cli_gate_with_agent(tmp_path)
+    code, out, err = run_cli(
+        [
+            "request-action",
+            "--intent",
+            _cli_intent(agent_id, "deny-1"),
+            "--agent-keyfile",
+            "agent.keys.json",
+        ],
+        cwd=tmp_path,
+    )
+    assert code == 0, out + err
+    receipt = json.loads(out)["authorization"]
+    assert receipt["decision"] == "BLOCKED"
+    assert receipt["reason_codes"] == ["POLICY_NOT_INSTALLED"]
+    code, out, err = run_cli(
+        ["verify-trace", "--action-id", receipt["action_id"]], cwd=tmp_path
+    )
+    assert code == 0, out + err
+    assert json.loads(out)["status"] == "VERIFIED"
+
+
+def test_cli_install_policy_allow_all_dev_is_explicit_and_warns(tmp_path):
+    agent_id = _cli_gate_with_agent(tmp_path)
+    code, out, err = run_cli(["install-policy"], cwd=tmp_path)
+    assert code == 1 and "--allow-all-dev" in err
+    code, out, err = run_cli(
+        ["install-policy", "--allow-all-dev", "--policy", "{}"], cwd=tmp_path
+    )
+    assert code == 1, out + err
+    code, out, err = run_cli(["install-policy", "--allow-all-dev"], cwd=tmp_path)
+    assert code == 0, out + err
+    assert "ALLOWS EVERY ACTION" in err
+    assert json.loads(out)["policy_version"].startswith("tempus.dev-allow-all.v1")
+    code, out, err = run_cli(
+        [
+            "request-action",
+            "--intent",
+            _cli_intent(agent_id, "dev-1", tenant="any-tenant"),
+            "--agent-keyfile",
+            "agent.keys.json",
+        ],
+        cwd=tmp_path,
+    )
+    assert code == 0, out + err
+    assert json.loads(out)["authorization"]["decision"] == "ALLOWED"
+    # doctor does not consider a development allow-all policy production ready
+    code, out, err = run_cli(["doctor", "--json"], cwd=tmp_path)
+    assert code == 1

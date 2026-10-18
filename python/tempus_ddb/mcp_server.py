@@ -490,7 +490,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     text=json.dumps(
                         {
                             "status": "success",
-                            "message": f"Database initialized: {db_path}",
+                            "message": (
+                                f"Database initialized: {db_path}. No policy is "
+                                "installed by default: the gate denies every action "
+                                "(POLICY_NOT_INSTALLED) until an operator installs one."
+                            ),
                             "db_path": db_path,
                         },
                         indent=2,

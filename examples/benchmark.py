@@ -29,6 +29,7 @@ def run_benchmark(records: int, json_output: bool, include_legacy: bool = False)
             executor_id = json.load(f)["public_key"]
 
         gate.register_agent(gate_id, "gate-benchmark", '{"can_delegate":true}')
+        gate.install_allow_all_dev_policy()  # demo only: explicit allow-all (default is deny-all)
         gate.register_agent(agent_id, "agent-benchmark", "{}")
         gate.register_agent(executor_id, "executor-benchmark", "{}")
 
