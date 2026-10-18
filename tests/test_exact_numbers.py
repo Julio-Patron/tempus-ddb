@@ -525,3 +525,52 @@ def test_conversion_that_raises_is_degraded_not_recorded_as_failed(name):
         "RuntimeError" in receipt["output"]["reason"]
         or "not representable" in (receipt["output"]["reason"])
     )
+
+
+# ----------- D2: the conversion is bounded in nodes and size
+
+
+def _shared_dag(depth):
+    node: Any = "x"
+    for _ in range(depth):
+        node = [node, node]  # 2**depth nodes when walked as a tree
+    return node
+
+
+def test_exponential_shared_references_degrade_quickly_instead_of_expanding():
+    started = time.monotonic()
+    receipt = _run_adapter({"dag": _shared_dag(22)}, "d2-dag")  # 4M nodes as a tree
+    assert time.monotonic() - started < 5
+    assert receipt["status"] == "SUCCEEDED", receipt
+    output = receipt["output"]
+    assert output["_tempus_output_degraded"] is True
+    assert "too large" in output["reason"]
+    assert len(output["repr"]) <= 512
+
+
+def test_a_deeply_shared_dag_does_not_kill_the_process():
+    # 2**40 nodes as a tree: this would be killed by the OOM killer without a budget.
+    receipt = _run_adapter({"dag": _shared_dag(40)}, "d2-dag-40")
+    assert receipt["output"]["_tempus_output_degraded"] is True
+
+
+@pytest.mark.parametrize(
+    "name,payload",
+    [
+        ("big-string", {"blob": "x" * (5 * 1024 * 1024)}),
+        ("many-nodes", {"items": list(range(250_000))}),
+        ("big-keys", {("k%d" % i) + "y" * 100_000: 1 for i in range(50)}),
+    ],
+)
+def test_oversized_results_are_degraded_with_the_marker(name, payload):
+    receipt = _run_adapter(payload, f"d2-{name}")
+    assert receipt["status"] == "SUCCEEDED", receipt
+    assert receipt["output"]["_tempus_output_degraded"] is True
+    assert "too large" in receipt["output"]["reason"]
+    assert len(json.dumps(receipt["output"])) < 2000
+
+
+def test_results_within_the_budget_are_untouched():
+    payload = {"blob": "x" * 900_000, "items": list(range(20_000))}
+    receipt = _run_adapter(payload, "d2-fits")
+    assert receipt["output"] == payload

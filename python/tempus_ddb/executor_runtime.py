@@ -10,6 +10,7 @@ import argparse
 import datetime
 import decimal
 import json
+import reprlib
 import sys
 from typing import Any, Dict, NamedTuple, Optional, Protocol, Set
 
@@ -19,15 +20,47 @@ _I64_MIN, _U64_MAX = -(2**63), 2**64 - 1
 
 
 MAX_OUTPUT_DEPTH = 64  # well inside the parser's 128 levels
+MAX_OUTPUT_NODES = (
+    100_000  # values visited; a shared reference counts each time it is walked
+)
+MAX_OUTPUT_CHARS = 4 * 1024 * 1024  # characters of every string and key kept
 MAX_REPR_CHARS = 512
+
+_SUMMARY = reprlib.Repr()
+_SUMMARY.maxlevel = 3
+_SUMMARY.maxstring = _SUMMARY.maxother = _SUMMARY.maxlong = 100
+for _name in ("maxlist", "maxtuple", "maxset", "maxfrozenset", "maxdict", "maxdeque"):
+    setattr(_SUMMARY, _name, 6)
 
 
 class _Unrepresentable(ValueError):
     """The adapter result has no faithful JSON form."""
 
 
+class _Budget:
+    """Caps the work of one conversion, so a hostile or accidental result stays bounded."""
+
+    def __init__(self) -> None:
+        self.nodes = MAX_OUTPUT_NODES
+        self.chars = MAX_OUTPUT_CHARS
+
+    def spend(self, chars: int = 0) -> None:
+        self.nodes -= 1
+        self.chars -= chars
+        if self.nodes < 0 or self.chars < 0:
+            raise _Unrepresentable(
+                f"result too large (more than {MAX_OUTPUT_NODES} values or "
+                f"{MAX_OUTPUT_CHARS} characters)"
+            )
+
+
 def _bounded_repr(value: Any) -> str:
+    """`repr` cut to MAX_REPR_CHARS; bytes are cut before they are rendered."""
     try:
+        if isinstance(value, (bytes, bytearray)) and len(value) > MAX_REPR_CHARS:
+            return (
+                repr(bytes(value[:MAX_REPR_CHARS]))[:MAX_REPR_CHARS] + "...<truncated>"
+            )
         text = repr(value)
     except Exception:  # a hostile or broken __repr__ must not lose the effect
         return f"<unrepresentable {type(value).__name__}>"
@@ -38,7 +71,21 @@ def _bounded_repr(value: Any) -> str:
     )
 
 
-def exact_json(value: Any, _depth: int = 0) -> Any:
+def _summary(value: Any) -> str:
+    """A short, work-bounded description of a whole payload (never expands containers)."""
+    try:
+        text = _SUMMARY.repr(value)
+    except Exception:
+        return f"<unrepresentable {type(value).__name__}>"
+    return text[:MAX_REPR_CHARS]
+
+
+def exact_json(
+    value: Any,
+    _depth: int = 0,
+    _budget: Optional[_Budget] = None,
+    _path: Optional[set] = None,
+) -> Any:
     """Make a payload safe to sign: only integers in i64/u64 range stay numbers.
 
     The gate refuses signed documents that hold floats or larger integers, because JSON
@@ -49,29 +96,58 @@ def exact_json(value: Any, _depth: int = 0) -> Any:
 
     Python values JSON has no form for are converted too: `Decimal` -> its exact string
     (`Decimal("19.990")` -> "19.990"), `datetime`/`date`/`time` -> ISO 8601, and anything
-    else (bytes, sets, arbitrary objects) -> a bounded `repr`. Nesting deeper than
-    MAX_OUTPUT_DEPTH, and cycles, raise `_Unrepresentable` (see `sanitize_output`).
+    else (bytes, sets, arbitrary objects) -> a bounded `repr`. Raises `_Unrepresentable`
+    (see `sanitize_output`) for nesting deeper than MAX_OUTPUT_DEPTH, cycles, more than
+    MAX_OUTPUT_NODES values or MAX_OUTPUT_CHARS characters.
     """
+    budget = _budget if _budget is not None else _Budget()
+    path = _path if _path is not None else set()
     if _depth > MAX_OUTPUT_DEPTH:
         raise _Unrepresentable(f"nesting deeper than {MAX_OUTPUT_DEPTH} levels")
-    if isinstance(value, bool) or value is None or isinstance(value, str):
+    if isinstance(value, bool) or value is None:
+        budget.spend()
+        return value
+    if isinstance(value, str):
+        budget.spend(len(value))
         return value
     if isinstance(value, int):
-        return value if _I64_MIN <= value <= _U64_MAX else str(value)
+        if _I64_MIN <= value <= _U64_MAX:
+            budget.spend()
+            return value
+        text = str(value)
+        budget.spend(len(text))
+        return text
     if isinstance(value, float):
-        return repr(value)
+        text = repr(value)
+        budget.spend(len(text))
+        return text
     if isinstance(value, decimal.Decimal):
-        return str(value)
+        text = str(value)
+        budget.spend(len(text))
+        return text
     if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
-        return value.isoformat()
-    if isinstance(value, dict):
-        return {
-            (key if isinstance(key, str) else str(key)): exact_json(item, _depth + 1)
-            for key, item in value.items()
-        }
-    if isinstance(value, (list, tuple)):
-        return [exact_json(item, _depth + 1) for item in value]
-    return _bounded_repr(value)
+        text = value.isoformat()
+        budget.spend(len(text))
+        return text
+    if isinstance(value, (dict, list, tuple)):
+        if id(value) in path:
+            raise _Unrepresentable("cyclic reference")
+        budget.spend()
+        path.add(id(value))
+        try:
+            if isinstance(value, dict):
+                converted: dict = {}
+                for key, item in value.items():
+                    name = key if isinstance(key, str) else str(key)
+                    budget.spend(len(name))
+                    converted[name] = exact_json(item, _depth + 1, budget, path)
+                return converted
+            return [exact_json(item, _depth + 1, budget, path) for item in value]
+        finally:
+            path.discard(id(value))
+    text = _bounded_repr(value)
+    budget.spend(len(text))
+    return text
 
 
 def sanitize_output(payload: Any) -> str:
@@ -87,13 +163,15 @@ def sanitize_output(payload: Any) -> str:
     """
     try:
         return json.dumps(exact_json(payload))
-    except Exception as exc:  # incl. code inside the adapter's own objects (__repr__...)
+    except (
+        Exception
+    ) as exc:  # incl. code inside the adapter's own objects (__repr__...)
         reason = str(exc) if isinstance(exc, _Unrepresentable) else type(exc).__name__
         return json.dumps(
             {
                 "_tempus_output_degraded": True,
                 "reason": f"adapter result not representable as JSON: {reason}",
-                "repr": _bounded_repr(payload),
+                "repr": _summary(payload),
             }
         )
 

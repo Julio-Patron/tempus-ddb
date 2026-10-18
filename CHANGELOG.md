@@ -124,7 +124,14 @@ policy on the permit's intent before consuming it, and read the same intent text
   - **A custom adapter never loses the effect to its own result type.** `Decimal` is
     recorded as its exact string (`Decimal("19.990")` -> `"19.990"`), `datetime`/`date`/`time`
     as ISO 8601, and bytes, sets or arbitrary objects as a bounded `repr` (512 characters).
-    A result that cannot be converted at all (nesting beyond 64 levels, cycles) is recorded
+    The conversion is bounded: at most 100,000 values (a shared reference counts every time
+    it is walked, so `x = [x, x]` nested 40 times degrades in milliseconds instead of
+    expanding to 2^40 nodes and exhausting memory) and 4 MiB of string and key characters;
+    the degraded marker describes the payload with a work-bounded summary and never expands
+    it. Not solved: a `__repr__` / `__str__` that sleeps or loops cannot be interrupted from
+    Python; the conversion has a size bound, not a time bound, and runs adapter code only for
+    objects the adapter itself returned.
+    A result that cannot be converted at all (nesting beyond 64 levels, cycles, too large) is recorded
     with the adapter's own status and the marker
     `{"_tempus_output_degraded": true, "reason": ..., "repr": <bounded>}`. Before, such a
     result made the runtime record `FAILED` (`EXECUTION_EXCEPTION`) although the external
