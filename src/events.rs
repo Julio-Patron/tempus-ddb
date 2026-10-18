@@ -258,11 +258,28 @@ pub(crate) fn verify_checkpoint_stream(
     stream_json: &str,
     expected_public_key: Option<&str>,
 ) -> Result<String, String> {
-    let checkpoint: Value = serde_json::from_str(checkpoint_json)
-        .map_err(|e| format!("Invalid checkpoint JSON: {e}"))?;
+    let duplicate_key = |label: &str| {
+        Ok(json!({
+            "schema_version": CHECKPOINT_VERIFICATION_SCHEMA,
+            "status": "INVALID",
+            "checkpoint_id": "unknown",
+            "events_verified": 0,
+            "reason_code": "DUPLICATE_JSON_KEY",
+            "message": format!("{label} repeats a JSON object key; the document is ambiguous"),
+        })
+        .to_string())
+    };
+    let checkpoint: Value = match crate::strict_json::parse(checkpoint_json) {
+        Ok(value) => value,
+        Err(e) if crate::strict_json::is_duplicate_key(&e) => return duplicate_key("checkpoint"),
+        Err(e) => return Err(format!("Invalid checkpoint JSON: {e}")),
+    };
 
-    let stream: Value =
-        serde_json::from_str(stream_json).map_err(|e| format!("Invalid stream JSON: {e}"))?;
+    let stream: Value = match crate::strict_json::parse(stream_json) {
+        Ok(value) => value,
+        Err(e) if crate::strict_json::is_duplicate_key(&e) => return duplicate_key("stream"),
+        Err(e) => return Err(format!("Invalid stream JSON: {e}")),
+    };
 
     let events = match stream.as_array() {
         Some(arr) => arr,

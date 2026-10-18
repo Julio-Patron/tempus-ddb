@@ -2183,7 +2183,7 @@ pub(crate) fn get_trace(storage: &SqliteStorage, action_id: &str) -> Result<Stri
         .optional()
         .map_err(|e| format!("Failed to read action trace: {e}"))?
         .ok_or_else(|| "TEMPUS_ACTION_NOT_FOUND".to_string())?;
-    let authorization: Value = serde_json::from_str(&authorization_json)
+    let authorization: Value = crate::strict_json::parse(&authorization_json)
         .map_err(|e| format!("Stored authorization is invalid JSON: {e}"))?;
     let execution_json = storage
         .conn
@@ -2196,7 +2196,7 @@ pub(crate) fn get_trace(storage: &SqliteStorage, action_id: &str) -> Result<Stri
         .map_err(|e| format!("Failed to read execution receipt: {e}"))?;
     let execution = execution_json
         .map(|value| {
-            serde_json::from_str::<Value>(&value)
+            crate::strict_json::parse(&value)
                 .map_err(|e| format!("Stored execution receipt is invalid JSON: {e}"))
         })
         .transpose()?;
@@ -2346,9 +2346,44 @@ fn push_error(result: &mut Value, code: &str) {
 
 /// Legacy verification: trust root taken from the database itself.
 pub(crate) fn verify_trace(storage: &SqliteStorage, action_id: &str) -> Result<String, String> {
-    let trace: Value = serde_json::from_str(&get_trace(storage, action_id)?)
-        .map_err(|e| format!("Stored trace is invalid JSON: {e}"))?;
-    verify_trace_value(Trust::Database(&storage.conn), &trace)
+    let trust = Trust::Database(&storage.conn);
+    let trace: Value = match get_trace(storage, action_id) {
+        Err(error) if error.contains(crate::strict_json::DUPLICATE_KEY_CODE) => {
+            return invalid_document(trust, "trace", DUPLICATE_KEY_ERROR)
+        }
+        other => serde_json::from_str(&other?)
+            .map_err(|e| format!("Stored trace is invalid JSON: {e}"))?,
+    };
+    verify_trace_value(trust, &trace)
+}
+
+/// Error code reported when a verified document repeats a JSON object key.
+const DUPLICATE_KEY_ERROR: &str = "DUPLICATE_JSON_KEY";
+
+/// A verification result for a document that could not be accepted as a whole.
+fn invalid_document(trust: Trust<'_>, kind: &str, code: &str) -> Result<String, String> {
+    canonicalize(&json!({
+        "schema_version": TRACE_VERIFICATION_SCHEMA,
+        "status": "INVALID",
+        "kind": kind,
+        "action_id": "",
+        "phase": "UNKNOWN",
+        "trust": trust_json(trust, false),
+        "checks": {
+            "authorization": "FAILED",
+            "execution": "NOT_PRESENT",
+        },
+        "errors": [code],
+    }))
+}
+
+/// Parse a document for verification: `Ok(Err(code))` when it must be reported INVALID.
+fn parse_verified(raw: &str, label: &str) -> Result<Result<Value, &'static str>, String> {
+    match crate::strict_json::parse(raw) {
+        Ok(value) => Ok(Ok(value)),
+        Err(error) if crate::strict_json::is_duplicate_key(&error) => Ok(Err(DUPLICATE_KEY_ERROR)),
+        Err(error) => Err(format!("{label} is not valid JSON: {error}")),
+    }
 }
 
 fn normalize_pinned_key(key: &str, label: &str) -> Result<String, String> {
@@ -2375,15 +2410,18 @@ pub(crate) fn verify_trace_pinned(
     executors: &[String],
 ) -> Result<String, String> {
     let (gate, executors) = normalize_pinned(gate, executors)?;
-    let trace: Value = serde_json::from_str(&get_trace(storage, action_id)?)
-        .map_err(|e| format!("Stored trace is invalid JSON: {e}"))?;
-    verify_trace_value(
-        Trust::Pinned {
-            gate: &gate,
-            executors: &executors,
-        },
-        &trace,
-    )
+    let trust = Trust::Pinned {
+        gate: &gate,
+        executors: &executors,
+    };
+    let trace: Value = match get_trace(storage, action_id) {
+        Err(error) if error.contains(crate::strict_json::DUPLICATE_KEY_CODE) => {
+            return invalid_document(trust, "trace", DUPLICATE_KEY_ERROR)
+        }
+        other => serde_json::from_str(&other?)
+            .map_err(|e| format!("Stored trace is invalid JSON: {e}"))?,
+    };
+    verify_trace_value(trust, &trace)
 }
 
 /// Verify a standalone receipt document without any database. Accepts a full
@@ -2399,8 +2437,10 @@ pub(crate) fn verify_receipt_pinned(
         gate: &gate,
         executors: &executors,
     };
-    let document: Value = serde_json::from_str(receipt_json)
-        .map_err(|e| format!("Receipt is not valid JSON: {e}"))?;
+    let document = match parse_verified(receipt_json, "Receipt")? {
+        Ok(document) => document,
+        Err(code) => return invalid_document(trust, "receipt", code),
+    };
     match document.get("schema_version").and_then(Value::as_str) {
         Some(TRACE_SCHEMA) => verify_trace_value(trust, &document),
         Some(AUTHORIZATION_RESULT_SCHEMA) => {
@@ -2541,8 +2581,10 @@ pub(crate) fn verify_bundle_pinned(
         gate: &gate,
         executors: &executors,
     };
-    let bundle: Value =
-        serde_json::from_str(bundle_json).map_err(|e| format!("Bundle is not valid JSON: {e}"))?;
+    let bundle = match parse_verified(bundle_json, "Bundle")? {
+        Ok(bundle) => bundle,
+        Err(code) => return invalid_document(trust, "bundle", code),
+    };
     if bundle.get("schema_version").and_then(Value::as_str) != Some(EVIDENCE_BUNDLE_SCHEMA) {
         return Err(format!(
             "TEMPUS_BUNDLE_SCHEMA_UNKNOWN: expected {EVIDENCE_BUNDLE_SCHEMA}"

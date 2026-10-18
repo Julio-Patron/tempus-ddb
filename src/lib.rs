@@ -12,6 +12,9 @@ use wasm_bindgen::prelude::*;
 mod b2a;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod strict_json;
+
+#[cfg(not(target_arch = "wasm32"))]
 mod phase3;
 #[cfg(not(target_arch = "wasm32"))]
 use phase3::SignerBackend;

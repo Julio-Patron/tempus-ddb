@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Security: verifier hardening (independent forge findings)
+- **Duplicate JSON keys are INVALID.** `serde_json` kept the last value of a repeated key
+  (`"amount":"9999.00","amount":"25.00"` verified), so a document could verify while a
+  first-wins parser or a human read something else. `verify-receipt`, `verify-bundle`,
+  `verify-trace` (stored documents) and `checkpoint verify` now reject a repeated object
+  key at any depth: status `INVALID`, error / reason code `DUPLICATE_JSON_KEY`, exit 2.
+
 ### Security: executors no longer follow redirects
 - The HTTP, GitHub and Slack executor transports used `urllib.request.urlopen`, which
   follows 3xx responses and forwards the `Authorization` header to the new host. They now
