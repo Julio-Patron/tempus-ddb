@@ -439,7 +439,7 @@ def run_whoami(args):
 
 
 def run_request_action(args):
-    """Request a fail-closed, single-use authorization for an agent action."""
+    """Request a signed, single-use authorization (ALLOWED or BLOCKED) for an agent action."""
     db_path, gate_keyfile = _resolve_paths(args)
     try:
         intent = _load_json_argument(args.intent, "intent")

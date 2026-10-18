@@ -48,7 +48,7 @@ sequenceDiagram
 - [x] La política de techos de gasto es determinista y está versionada/firmada.
 - [x] Un vale de pago consumido no puede reutilizarse.
 - [x] Los vales expiran en minutos, no viven indefinidamente.
-- [x] Fail-closed: si el gate no puede evaluar la política, el pago no ocurre.
+- [x] Sin política instalada el gate deniega todo (default-deny) y firma la denegación; si el gate no puede firmar o evaluar, no emite permiso y el pago no ocurre.
 - [x] Todo cargo, exitoso o fallido, produce un recibo firmado por gate y ejecutor.
 - [ ] *Pendiente de decidir por el equipo:* verificación independiente de trazas (¿quién audita, con qué frecuencia?).
 - [ ] *Pendiente:* plan explícito para cargos que quedan en estado ambiguo tras un reinicio del ejecutor (evitar reintento ciego).

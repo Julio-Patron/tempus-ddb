@@ -70,8 +70,8 @@ In 2026, several MCP governance proxies (such as Bifrost, Obot, MCPX, MintMCP) m
 |---|---|---|
 | **Security Model** | **Authorize & Forward (*"Trust"*):** Checks rules, forwards requests, and trusts the agent and downstream service. | **Cryptographic Toll (*"Zero-Trust"*):** Agent signs intent; Gate issues single-use permit; Executor consumes permit atomically. |
 | **Credential Boundary** | Agent or Gateway proxy holds raw API keys and database credentials. | **Strict Credential Isolation:** Agent *never* sees or handles downstream secrets (`GITHUB_TOKEN`, Slack tokens, API keys). |
-| **Replay & Loop Prevention** | Advisory rate limits; repeated calls within role permissions pass through. | **Cryptographic Single Consumption:** Consumed permits are permanently invalidated. Replay attempts fail closed. |
-| **Tamper Detection** | Server application logs (which can be modified, truncated, or forged). | **Dual-Signed Immutable Receipts:** Cryptographically linked (Ed25519 + SHA-256) and verifiable offline by anyone. |
+| **Replay & Loop Prevention** | Advisory rate limits; repeated calls within role permissions pass through. | **Single-use permits:** Each permit can be consumed once: the gate rejects a second, different outcome for the same permit and the executor runtime rejects a reused permit (single-instance deployments; multi-instance consumption is not yet proven). |
+| **Tamper Detection** | Server application logs (which can be modified, truncated, or forged). | **Dual-signed receipts:** Cryptographically linked (Ed25519 + SHA-256). Anyone holding the gate's public key can check them offline with `verify-receipt` / `verify-bundle`; this detects altered or forged receipts, not omitted ones (see *Independent verification*). |
 | **Financial / High-Impact Actions** | Unstructured JSON payloads. | **Universal `money` Contract:** Hard limits, currency enforcement, and tenant-scoped asset ceilings. |
 
 ---
@@ -117,7 +117,7 @@ bundles, rotation and revocation, unified mediated `ExecutorRuntime` (GitHub, HT
 - Tenant-scoped delegation, signed key rotation and revocation, historical key-at-time
   verification, and emergency invalidation of unconsumed permits.
 - A provider-neutral signer boundary shared by the gate and executor. Local Ed25519 and
-  Vault Transit use the same exact-byte contract; provider outages fail closed.
+  Vault Transit use the same exact-byte contract; a signing timeout, error, unexpected key version or signature that does not verify aborts the operation and no receipt is issued.
 - `ALLOWED` or `BLOCKED` authorization before execution.
 - Short-lived permits, deterministic action IDs, and idempotency conflict detection.
 - Single-consumption execution receipts; an identical retry is idempotent and a
@@ -393,7 +393,7 @@ private keys and keyfiles never enter the gate process.
 
 Explore practical integration recipes in the [cookbooks/](cookbooks/) directory:
 
-- [🦜🔗 **LangChain & LangGraph Guard**](cookbooks/langchain_agent_guard.py) — Wrap sensitive tools (DB writes, payouts) with fail-closed cryptographic permits.
+- [🦜🔗 **LangChain & LangGraph Guard**](cookbooks/langchain_agent_guard.py) — Wrap sensitive tools (DB writes, payouts) so they run only with a signed, single-use permit.
 - [👥 **CrewAI Multi-Agent Financial Gate**](cookbooks/crewai_action_gate.py) — Multi-agent delegation where executors require signed gate permits before executing effects.
 - [🔌 **Claude Desktop & Cursor MCP Quickstart**](cookbooks/mcp_cursor_claude_quickstart.md) — Connect Tempus DDB as an autonomous Model Context Protocol server in 2 minutes.
 

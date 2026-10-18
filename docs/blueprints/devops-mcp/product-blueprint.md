@@ -59,8 +59,8 @@ Introduce a cryptographic toll gate between the agent runtime and destructive/st
 |---|---|---|
 | **Trust Domain** | The same process inspects input, checks rules, and executes. | **Decoupled:** The Gate authorizes; a distinct isolated process executes. |
 | **Credential Storage** | `GITHUB_TOKEN` lives in memory accessible to the tool host. | **Strictly Isolated:** Tokens live only in the executor process; never visible to the agent or chat prompt. |
-| **Replay & Loop Resistance** | Repeated tool calls within quota limits succeed repeatedly. | **Cryptographic Single-Consumption:** Once consumed, the permit is permanently spent. Retries fail closed. |
-| **Tamper Evidence** | Server log lines (easily forged, truncated, or lost). | **Dual-Signed Receipt:** Mathematically verifiable offline without trusting server logs. |
+| **Replay & Loop Resistance** | Repeated tool calls within quota limits succeed repeatedly. | **Cryptographic Single-Consumption:** Once consumed, a second outcome for the same permit is rejected (single-instance executor). |
+| **Tamper Evidence** | Server log lines (easily forged, truncated, or lost). | **Dual-Signed Receipt:** Verifiable offline with the gate's pinned public key (`verify-receipt` / `verify-bundle`), without trusting server logs; it detects altered or forged receipts, not omitted ones. |
 | **Prompt Injection Defense** | System prompts ("Do not touch repo X") can be bypassed by jailbreaks. | **Mathematical Constraint:** The Gate rejects any intent outside signed policy, regardless of model conviction. |
 
 ---

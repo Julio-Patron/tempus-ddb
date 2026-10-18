@@ -5,7 +5,7 @@ custom mediated executor adapter satisfies the Tempus zero-trust security invari
 - Atomic single-use permit consumption
 - Strict credential isolation
 - Deterministic outcome receipts
-- Fail-closed crash recovery and UNKNOWN handling
+- Crash recovery that records UNKNOWN instead of retrying
 """
 
 import json
@@ -153,7 +153,7 @@ class AdapterConformanceHarness:
                     raise AssertionError(f"Unexpected replay error message: {exc}")
             if not replay_failed:
                 raise AssertionError(
-                    "Second execution of consumed permit MUST fail closed"
+                    "Second execution of consumed permit MUST be rejected"
                 )
 
             # 3. Check unsupported action rejection

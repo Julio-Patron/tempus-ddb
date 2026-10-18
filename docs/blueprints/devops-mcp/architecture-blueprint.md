@@ -31,7 +31,7 @@ sequenceDiagram
     Exec->>Gate: Commit signed execution outcome (status, external_ref, state_hash)
     Gate->>Gate: Atomically record receipt & invalidate permit
     Gate-->>Agent: Final verifiable execution receipt
-    Note over Dev,Ext: Any auditor can run `tempus verify-trace` offline without API access
+    Note over Dev,Ext: An auditor with the pinned gate public key can run `tempus verify-bundle` offline without API access
 ```
 
 ---
@@ -112,10 +112,10 @@ Dual-signed by Gate and Executor upon completion:
 ## 🔒 Security Checklist for Production
 
 - [x] **Zero Credential Ambient Access:** `GITHUB_TOKEN`, RSA PEM private keys, and `SLACK_BOT_TOKEN` are present **only** in the executor environment, never in MCP client processes (Cursor, Claude, OpenClaw).
-- [x] **Fail-Closed Redirect Protection:** HTTP transport enforces `_RejectRedirects` to prevent leaking Authorization headers to unauthorized endpoints.
+- [ ] **Redirect Protection (not implemented):** the HTTP, GitHub and Slack transports call `urllib.request.urlopen`, which follows redirects and forwards the `Authorization` header to the new host. Rejecting redirects is a pending hardening item; this blueprint previously claimed it as done.
 - [x] **Strict Installation Scoping:** When using GitHub Apps, tokens are minted with minimal required permissions (`issues: write` or `pull_requests: write`) and bound exclusively to the target repository.
-- [x] **Replay Prevention:** A consumed permit cannot be reused. Re-executing an existing trial fails closed.
-- [x] **Offline Verifiability:** Any auditor can verify the entire trace using `tempus verify-trace --action-id <id>` with only public keys.
+- [x] **Replay Prevention:** A consumed permit cannot be reused: re-executing it is rejected (single-instance executor).
+- [x] **Offline Verifiability:** An auditor who obtains the gate public key out of band can verify an exported receipt or evidence bundle with `tempus verify-receipt` / `tempus verify-bundle --gate-public-key <hex>` and no database. `verify-trace` without a pinned key trusts the database's own root and is marked NOT independent. Limits: omitted outcomes, global single use and gate-key compromise are not covered.
 - [ ] **Operator Consideration:** Determine whether production repositories (e.g. `main` branch merges) require a secondary human approval step before permit issuance.
 
 ---

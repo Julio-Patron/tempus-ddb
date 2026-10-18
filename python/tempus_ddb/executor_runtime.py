@@ -2,7 +2,8 @@
 
 This module provides the deep ExecutorRuntime engine and ActionAdapter interface
 to ensure all mediated executors enforce identical permit verification, atomic
-single-consumption, credential isolation, and fail-closed crash recovery.
+single-consumption, credential isolation, and crash recovery that records an
+unknown outcome instead of retrying.
 """
 
 import argparse
