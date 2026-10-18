@@ -734,3 +734,45 @@ def test_output_degraded_is_null_when_nothing_verified():
             cwd=root,
         )
         assert code == 0 and json.loads(out)["output_degraded"] is None, out
+
+
+# ----------- E1: --metadata and the raw API for NaN / Infinity
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity", "1e400", "-0"])
+def test_register_agent_metadata_reports_non_exact_numbers_with_the_same_code(token):
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        code, out, err = run_cli(["init", "--allow-all-dev"], cwd=tmpdir)
+        assert code == 0, out + err
+        agent_key = os.path.join(tmpdir, "agent.keys.json")
+        code, out, err = run_cli(["keygen", "--output", agent_key], cwd=tmpdir)
+        assert code == 0, out + err
+        code, out, err = run_cli(
+            [
+                "register-agent",
+                "--alias",
+                "a",
+                "--agent-keyfile",
+                agent_key,
+                "--metadata",
+                '{"v":%s}' % token,
+            ],
+            cwd=tmpdir,
+        )
+        assert code == 1, out + err
+        assert "NON_EXACT_NUMBER" in err and "must be valid JSON" not in err, err
+
+
+def test_raw_gate_api_says_nan_and_infinity_are_not_valid_json():
+    """NaN and Infinity are not JSON at all; the gate (unlike the CLI) reports them so."""
+    from tempus_ddb import TempusDDB, gen_keys
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        key = os.path.join(tmpdir, "gate.keys.json")
+        gen_keys(key)
+        gate = TempusDDB(os.path.join(tmpdir, "gate.db"), key)
+        for raw in ('{"a":NaN}', '{"a":Infinity}', '{"a":-Infinity}'):
+            with pytest.raises(Exception, match="must be valid JSON"):
+                gate.install_policy(raw)
+        with pytest.raises(Exception, match="NON_EXACT_NUMBER"):
+            gate.install_policy('{"a":1e400}')

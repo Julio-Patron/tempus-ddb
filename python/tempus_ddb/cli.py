@@ -57,6 +57,16 @@ def _parse_int(label, text):
         _non_exact(label, text[:20] + "...")
 
 
+def _parse_exact(value, label):
+    """json.loads that reports NaN, Infinity, 1e400 and -0 as NON_EXACT_NUMBER."""
+    return json.loads(
+        value,
+        parse_constant=lambda name: _non_exact(label, name),
+        parse_float=lambda text: _parse_float(label, text),
+        parse_int=lambda text: _parse_int(label, text),
+    )
+
+
 def _load_json_argument(value, label):
     """Load a JSON object from a literal string or a file path."""
     if os.path.isfile(value):
@@ -68,12 +78,7 @@ def _load_json_argument(value, label):
             "(pass the path of an existing JSON file, or a JSON object)"
         )
     try:
-        parsed = json.loads(
-            value,
-            parse_constant=lambda name: _non_exact(label, name),
-            parse_float=lambda text: _parse_float(label, text),
-            parse_int=lambda text: _parse_int(label, text),
-        )
+        parsed = _parse_exact(value, label)
     except json.JSONDecodeError as exc:
         raise ValueError(
             f"--{label} must be valid JSON or a path to a JSON file: {exc}"
@@ -413,6 +418,10 @@ def run_register_agent(args):
 
         db = TempusDDB(db_path, keyfile if os.path.exists(keyfile) else DEFAULT_KEYFILE)
         metadata = getattr(args, "metadata", "{}") or "{}"
+        try:
+            _parse_exact(metadata, "metadata")  # same NON_EXACT_NUMBER wording as --intent
+        except json.JSONDecodeError:
+            pass  # the gate reports a syntax error with its own message
         result = db.register_agent(public_key, args.alias, metadata)
         parsed = json.loads(result)
         print(f"[OK] Agent '{args.alias}' registered.")

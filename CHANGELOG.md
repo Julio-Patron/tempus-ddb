@@ -109,9 +109,12 @@ policy on the permit's intent before consuming it, and read the same intent text
     document as `INVALID` (`AUTHORIZATION_NON_EXACT_NUMBER` / `EXECUTION_NON_EXACT_NUMBER
     (path)`, or reason code `NON_EXACT_NUMBER`), including bundles signed before this change.
   - `NaN`, `Infinity`, `-Infinity` and numbers that overflow a double (`1e400`) are reported
-    with the same `NON_EXACT_NUMBER` code on the CLI (`--intent`, `--outcome`, `--policy`) and
-    in the gate (`install_policy`, intents, metadata, outcomes). They used to say "must be
-    valid JSON" because Python turned them into `Infinity` before the gate saw them. `-0` is
+    with the `NON_EXACT_NUMBER` code on the CLI (`--intent`, `--outcome`, `--policy`,
+    `register-agent --metadata`). They used to say "must be valid JSON" because Python turned
+    them into `Infinity` before the gate saw them. In the gate itself (Python/Rust API called
+    with raw text), `1e400` is `NON_EXACT_NUMBER`, while `NaN` / `Infinity` / `-Infinity`
+    are not JSON at all and are reported as "must be valid JSON" (an earlier version of this
+    entry said otherwise). `-0` is
     refused too: Python reads it as `0`, so it would be signed as `0` and silently rewritten
     (write `0`). Decision: reject rather than document, it is one check and removes the
     only spelling that changed on the way.
