@@ -605,11 +605,46 @@ database signed by someone else) and `1` is a usage or I/O error. `--strict` ref
 without `--gate-public-key`. Python: `verify_receipt(json, gate_pub, executor_pubs=None)`,
 `verify_checkpoint(chk, stream, gate_pub)` and `TempusDDB.verify_trace(id, gate_pub)`.
 
-What a pinned verification does **not** show (also listed in its `trust.not_checked`):
-that the agent was registered at issue time or that the permit was consumed only once
-(the pinned gate signature attests both), that the receipts you were given are *all* of
-them (omitted or rolled-back records are not detectable from a single document), and it
-assumes the gate private key was not compromised.
+### Evidence bundle: one file, verified offline
+
+```bash
+# Operator: one file per action (add --create-checkpoint to sign a fresh checkpoint
+# first so the bundle can show ledger inclusion)
+tempus export-bundle --action-id <action-id> --out evidence.json --create-checkpoint
+
+# Verifier: only the file and the pinned gate public key; no database, no private keys
+tempus verify-bundle --bundle evidence.json --gate-public-key <64-hex|file> \
+    [--executor-public-key <hex>]
+```
+
+The bundle (`tempus.evidence-bundle.v1`) holds the trace (intent, agent signature, permit,
+signed policy used to reproduce the decision, outcome and signed receipts) and, if one
+covers the action, the gate-signed checkpoint with the tenant's event stream. It contains no
+private keys: every field is a public document or a hash. The verifier re-checks every
+signature and hash against the pinned key, reproduces the decision from the signed policy,
+and, with a checkpoint, checks that the permit and outcome events are in the signed ledger.
+Same exit codes as above (0 VERIFIED, 2 INVALID, 1 usage). Python:
+`TempusDDB.export_bundle(id)` and `verify_bundle(json, gate_pub, executor_pubs=None)`.
+
+What a pinned verification (receipt or bundle) does **not** show; the result lists these in
+`trust.not_checked`:
+
+- **Completeness.** A bundle that leaves out the outcome is still a valid permit-only
+  bundle (the verifier reports `phase: AUTHORIZED` or `EXPIRED`, `execution: NOT_PRESENT`).
+  Nothing proves that other actions, retries or outcomes are not hidden from you.
+- **Single use across the system.** Whether the permit was consumed only once is gate
+  state; a document cannot prove it, even with a checkpoint.
+- **Agent registration at issue time** and, unless you pin it, **the executor identity**:
+  the pinned gate signature attests both.
+- **Ledger inclusion without a checkpoint.** Only a bundle with a checkpoint shows the
+  events are in the gate's signed ledger, and only as of that checkpoint's time. A gate
+  that signs two diverging ledgers is not detected from one bundle.
+- **Gate key compromise.** The guarantee is only as good as the secrecy of the gate key and
+  the out-of-band way you obtained its public key.
+- **Privacy.** The bundle includes the intent and outcome as recorded, and the checkpoint
+  stream exposes ids, types, timestamps and hashes (not contents) of every event of that
+  tenant up to the checkpoint. Streams over `--max-stream-events` (default 10000) are
+  omitted, not truncated.
 
 ## Legacy ledger
 

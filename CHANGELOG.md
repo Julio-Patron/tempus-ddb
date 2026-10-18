@@ -27,6 +27,17 @@
   `TempusDDB.verify_trace(id, gate_public_key=None, executor_public_keys=None)`; Rust:
   `verify_receipt`, `verify_checkpoint`, `SqliteStorage::verify_trace_pinned`,
   `tempus-ddb-core verify-receipt`.
+- **Evidence bundle** (`tempus.evidence-bundle.v1`): `tempus export-bundle --action-id ID --out
+  FILE [--create-checkpoint] [--max-stream-events N] [--force]` writes one JSON file with the
+  trace, signed policy and, if one covers the action, the latest signed checkpoint with its
+  event stream; no private keys. `tempus verify-bundle --bundle FILE --gate-public-key HEX|FILE
+  [--executor-public-key ...]` verifies it with no database (exit 0 VERIFIED, 2 INVALID, 1
+  usage), including that the permit and outcome events are in the checkpointed ledger. Python:
+  `TempusDDB.export_bundle`, `verify_bundle`; Rust: `SqliteStorage::export_bundle`,
+  `verify_bundle`, `tempus-ddb-core export-bundle|verify-bundle`. Limits (completeness,
+  global single use, gate-key compromise, privacy) are documented in the README.
+- Trace verification now also rejects a trace whose unsigned `action_id` wrapper differs from
+  the signed one (`TRACE_ACTION_ID_MISMATCH`).
 - Verification results now carry a `kind` and a `trust` object (`PINNED_GATE_KEY`, independent,
   with `not_checked`; or `DATABASE_SELF_ATTESTED`, `"independent": false`). Without a pinned
   key the CLI prints a "NOT INDEPENDENT" warning; `--strict` refuses to run unpinned.
