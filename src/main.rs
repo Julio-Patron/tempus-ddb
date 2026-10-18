@@ -156,6 +156,30 @@ enum Commands {
         #[arg(long = "executor-public-key")]
         executor_public_keys: Vec<String>,
     },
+    /// Export one action as a self-contained evidence bundle (no private keys)
+    ExportBundle {
+        #[arg(long, default_value = "tempus.db")]
+        db: String,
+        #[arg(long, default_value = "gate.keys.json")]
+        gate_keyfile: String,
+        #[arg(long)]
+        action_id: String,
+        /// Output file for the bundle JSON
+        #[arg(long)]
+        out: String,
+    },
+    /// Verify an evidence bundle without a database, against a pinned gate key
+    VerifyBundle {
+        /// Path to the bundle JSON
+        #[arg(long)]
+        bundle: String,
+        /// Gate public key (64 hex chars) pinned by the verifier
+        #[arg(long)]
+        gate_public_key: String,
+        /// Optional executor public key(s) to pin
+        #[arg(long = "executor-public-key")]
+        executor_public_keys: Vec<String>,
+    },
     /// Verify a standalone receipt (trace, permit or outcome JSON) without a database
     VerifyReceipt {
         /// Path to the receipt JSON
@@ -463,6 +487,51 @@ fn main() {
                 }
             };
             print_verification(result);
+        }
+        Commands::ExportBundle {
+            db,
+            gate_keyfile,
+            action_id,
+            out,
+        } => {
+            let storage = match _tempus_ddb::SqliteStorage::new(db, gate_keyfile) {
+                Ok(storage) => storage,
+                Err(error) => {
+                    eprintln!("Error opening gate: {error}");
+                    std::process::exit(1);
+                }
+            };
+            match storage.export_bundle(&action_id, None) {
+                Ok(bundle) => {
+                    if let Err(error) = std::fs::write(&out, &bundle) {
+                        eprintln!("Error writing bundle '{out}': {error}");
+                        std::process::exit(1);
+                    }
+                    eprintln!("Bundle written to {out}");
+                }
+                Err(error) => {
+                    eprintln!("Error exporting bundle: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Commands::VerifyBundle {
+            bundle,
+            gate_public_key,
+            executor_public_keys,
+        } => {
+            let raw = match std::fs::read_to_string(&bundle) {
+                Ok(raw) => raw,
+                Err(error) => {
+                    eprintln!("Error reading bundle '{bundle}': {error}");
+                    std::process::exit(1);
+                }
+            };
+            print_verification(_tempus_ddb::verify_bundle(
+                &raw,
+                &gate_public_key,
+                &executor_public_keys,
+            ));
         }
         Commands::VerifyReceipt {
             receipt,

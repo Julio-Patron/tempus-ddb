@@ -629,6 +629,16 @@ impl SqliteStorage {
         b2a::verify_trace_pinned(self, action_id, gate_public_key, executor_public_keys)
     }
 
+    /// Export a self-contained evidence bundle for one action (see
+    /// `tempus.evidence-bundle.v1`). Contains no private key material.
+    pub fn export_bundle(
+        &self,
+        action_id: &str,
+        max_stream_events: Option<u64>,
+    ) -> Result<String, String> {
+        b2a::export_bundle(self, action_id, max_stream_events)
+    }
+
     /// Install and activate a deterministic policy bundle signed by the gate.
     pub fn install_policy(&self, policy_spec: &str) -> Result<String, String> {
         let spec: serde_json::Value = serde_json::from_str(policy_spec)
@@ -1202,6 +1212,14 @@ impl TempusDDB {
         .map_err(PyRuntimeError::new_err)
     }
 
+    /// Export one action as a self-contained evidence bundle (JSON string).
+    #[pyo3(signature = (action_id, max_stream_events=None))]
+    fn export_bundle(&self, action_id: &str, max_stream_events: Option<u64>) -> PyResult<String> {
+        self.storage
+            .export_bundle(action_id, max_stream_events)
+            .map_err(PyRuntimeError::new_err)
+    }
+
     #[pyo3(signature = (policy_spec,))]
     fn install_policy(&self, policy_spec: &str) -> PyResult<String> {
         self.storage
@@ -1314,6 +1332,16 @@ pub fn verify_receipt(
     b2a::verify_receipt_pinned(receipt_json, gate_public_key, executor_public_keys)
 }
 
+/// Verify an evidence bundle with no database, against a pinned gate public key.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn verify_bundle(
+    bundle_json: &str,
+    gate_public_key: &str,
+    executor_public_keys: &[String],
+) -> Result<String, String> {
+    b2a::verify_bundle_pinned(bundle_json, gate_public_key, executor_public_keys)
+}
+
 /// Verify a checkpoint and its event stream with no database. The signer must
 /// equal `expected_public_key`, which the verifier supplies out of band.
 #[cfg(not(target_arch = "wasm32"))]
@@ -1395,6 +1423,24 @@ pub fn py_verify_receipt(
     .map_err(PyRuntimeError::new_err)
 }
 
+/// Verify an evidence bundle without a database, against a pinned gate key.
+#[cfg(not(target_arch = "wasm32"))]
+#[pyfunction]
+#[pyo3(name = "verify_bundle", signature = (bundle_json, gate_public_key, executor_public_keys=None))]
+#[allow(clippy::useless_conversion)]
+pub fn py_verify_bundle(
+    bundle_json: &str,
+    gate_public_key: &str,
+    executor_public_keys: Option<Vec<String>>,
+) -> PyResult<String> {
+    verify_bundle(
+        bundle_json,
+        gate_public_key,
+        &executor_public_keys.unwrap_or_default(),
+    )
+    .map_err(PyRuntimeError::new_err)
+}
+
 /// Verify a checkpoint and event stream without a database, against a pinned key.
 #[cfg(not(target_arch = "wasm32"))]
 #[pyfunction]
@@ -1413,6 +1459,7 @@ pub fn py_verify_checkpoint(
 #[pymodule]
 fn _tempus_ddb(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_verify_receipt, m)?)?;
+    m.add_function(wrap_pyfunction!(py_verify_bundle, m)?)?;
     m.add_function(wrap_pyfunction!(py_verify_checkpoint, m)?)?;
     m.add_class::<TempusDDB>()?;
     m.add_class::<TempusExecutor>()?;

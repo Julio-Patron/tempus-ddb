@@ -13,6 +13,7 @@ const EXECUTION_RESULT_SCHEMA: &str = "tempus.execution-result.v1";
 const EXECUTION_RECEIPT_SCHEMA: &str = "tempus.execution-receipt.v1";
 const TRACE_SCHEMA: &str = "tempus.action-trace.v1";
 const TRACE_VERIFICATION_SCHEMA: &str = "tempus.trace-verification.v1";
+const EVIDENCE_BUNDLE_SCHEMA: &str = "tempus.evidence-bundle.v1";
 const AGENT_REGISTRATION_SCHEMA: &str = "tempus.agent-registration.v1";
 const LEGACY_POLICY_VERSION: &str = "tempus.identity-gate.v1";
 
@@ -2320,7 +2321,27 @@ fn verify_trace_value(trust: Trust<'_>, trace: &Value) -> Result<String, String>
         .get("action_id")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    verify_documents(trust, "trace", action_id, Some(authorization), execution)
+    let output = verify_documents(trust, "trace", action_id, Some(authorization), execution)?;
+    // The wrapper's action_id is unsigned: it must equal the signed one.
+    let signed_action_id = authorization
+        .get("authorization")
+        .and_then(|value| value.get("action_id"))
+        .and_then(Value::as_str);
+    if signed_action_id == Some(action_id) {
+        return Ok(output);
+    }
+    let mut result: Value =
+        serde_json::from_str(&output).map_err(|e| format!("Internal verification error: {e}"))?;
+    push_error(&mut result, "TRACE_ACTION_ID_MISMATCH");
+    canonicalize(&result)
+}
+
+/// Append an error to a verification result and force status INVALID.
+fn push_error(result: &mut Value, code: &str) {
+    if let Some(errors) = result.get_mut("errors").and_then(Value::as_array_mut) {
+        errors.push(json!(code));
+    }
+    result["status"] = json!("INVALID");
 }
 
 /// Legacy verification: trust root taken from the database itself.
@@ -2405,4 +2426,218 @@ pub(crate) fn verify_receipt_pinned(
             other.unwrap_or("none")
         )),
     }
+}
+
+const BUNDLE_DEFAULT_MAX_EVENTS: u64 = 10_000;
+
+/// Export one action as a single self-contained evidence bundle: the trace
+/// (permit, outcome, signed receipts, signed policy bundle, intent and agent
+/// signature) plus, when one exists, the latest gate-signed checkpoint covering
+/// the action together with the tenant's event stream it commits to. The bundle
+/// holds no private keys: every field is either a public document or a hash.
+pub(crate) fn export_bundle(
+    storage: &SqliteStorage,
+    action_id: &str,
+    max_stream_events: Option<u64>,
+) -> Result<String, String> {
+    let max_events = max_stream_events.unwrap_or(BUNDLE_DEFAULT_MAX_EVENTS);
+    let trace: Value = serde_json::from_str(&get_trace(storage, action_id)?)
+        .map_err(|e| format!("Stored trace is invalid JSON: {e}"))?;
+    let receipt = trace
+        .pointer("/authorization/authorization")
+        .ok_or_else(|| "TEMPUS_AUTHORIZATION_NOT_FOUND".to_string())?;
+    let tenant_id = string_field(receipt, "tenant_id")?;
+    let mut event_ids = vec![string_field(receipt, "authorization_id")?];
+    if let Some(receipt_id) = trace
+        .pointer("/execution/receipt/receipt_id")
+        .and_then(Value::as_str)
+    {
+        event_ids.push(receipt_id.to_string());
+    }
+    let mut needed_sequence = 0u64;
+    let mut all_events_found = true;
+    for event_id in &event_ids {
+        let sequence: Option<u64> = storage
+            .conn
+            .query_row(
+                "SELECT sequence_number FROM event_stream WHERE tenant_id = ?1 AND event_id = ?2",
+                params![tenant_id, event_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("Failed to look up event: {e}"))?;
+        match sequence {
+            Some(sequence) => needed_sequence = needed_sequence.max(sequence),
+            None => all_events_found = false,
+        }
+    }
+    let mut checkpoint = Value::Null;
+    if all_events_found {
+        let stored: Option<(String, u64, u64)> = storage
+            .conn
+            .query_row(
+                "SELECT checkpoint_json, first_sequence, last_sequence FROM checkpoints
+                 WHERE tenant_id = ?1 AND last_sequence >= ?2
+                 ORDER BY checkpoint_sequence DESC LIMIT 1",
+                params![tenant_id, needed_sequence],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|e| format!("Failed to read checkpoint: {e}"))?;
+        if let Some((checkpoint_json, first, last)) = stored {
+            let count = last.saturating_sub(first) + 1;
+            if count <= max_events {
+                let stream = crate::events::export_event_stream(
+                    &storage.conn,
+                    &tenant_id,
+                    first,
+                    u32::try_from(count).map_err(|_| "Event stream too large".to_string())?,
+                )?;
+                checkpoint = json!({
+                    "checkpoint": serde_json::from_str::<Value>(&checkpoint_json)
+                        .map_err(|e| format!("Stored checkpoint is invalid JSON: {e}"))?,
+                    "stream": serde_json::from_str::<Value>(&stream)
+                        .map_err(|e| format!("Exported stream is invalid JSON: {e}"))?,
+                });
+            }
+        }
+    }
+    canonicalize(&json!({
+        "schema_version": EVIDENCE_BUNDLE_SCHEMA,
+        "action_id": action_id,
+        "trace": trace,
+        "checkpoint": checkpoint,
+    }))
+}
+
+fn stream_includes(
+    stream: &[Value],
+    event_id: &str,
+    event_types: &[&str],
+    document: &Value,
+) -> bool {
+    let Ok(canonical) = canonicalize(document) else {
+        return false;
+    };
+    let payload_hash = sha256_hex(canonical.as_bytes());
+    stream.iter().any(|event| {
+        event.get("event_id").and_then(Value::as_str) == Some(event_id)
+            && event
+                .get("event_type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| event_types.contains(&kind))
+            && event.get("payload_hash").and_then(Value::as_str) == Some(payload_hash.as_str())
+    })
+}
+
+/// Verify an evidence bundle with no database against a pinned gate key.
+pub(crate) fn verify_bundle_pinned(
+    bundle_json: &str,
+    gate: &str,
+    executors: &[String],
+) -> Result<String, String> {
+    let (gate, executors) = normalize_pinned(gate, executors)?;
+    let trust = Trust::Pinned {
+        gate: &gate,
+        executors: &executors,
+    };
+    let bundle: Value =
+        serde_json::from_str(bundle_json).map_err(|e| format!("Bundle is not valid JSON: {e}"))?;
+    if bundle.get("schema_version").and_then(Value::as_str) != Some(EVIDENCE_BUNDLE_SCHEMA) {
+        return Err(format!(
+            "TEMPUS_BUNDLE_SCHEMA_UNKNOWN: expected {EVIDENCE_BUNDLE_SCHEMA}"
+        ));
+    }
+    let trace = bundle
+        .get("trace")
+        .ok_or_else(|| "TEMPUS_BUNDLE_TRACE_MISSING".to_string())?;
+    let mut result: Value = serde_json::from_str(&verify_trace_value(trust, trace)?)
+        .map_err(|e| format!("Internal verification error: {e}"))?;
+    result["kind"] = json!("bundle");
+    if bundle.get("action_id") != trace.get("action_id") {
+        push_error(&mut result, "BUNDLE_ACTION_ID_MISMATCH");
+    }
+
+    let checkpoint_check = match bundle.get("checkpoint").filter(|value| !value.is_null()) {
+        None => "NOT_PRESENT",
+        Some(section) => {
+            let mut failures: Vec<String> = Vec::new();
+            let checkpoint = section.get("checkpoint").unwrap_or(&Value::Null);
+            let stream = section.get("stream").unwrap_or(&Value::Null);
+            match crate::events::verify_checkpoint_stream(
+                &checkpoint.to_string(),
+                &stream.to_string(),
+                Some(&gate),
+            ) {
+                Ok(raw) => {
+                    let verdict: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+                    if verdict.get("status").and_then(Value::as_str) != Some("VERIFIED") {
+                        let reason = verdict
+                            .get("reason_code")
+                            .and_then(Value::as_str)
+                            .unwrap_or("INVALID");
+                        failures.push(format!("CHECKPOINT_{reason}"));
+                    }
+                }
+                Err(_) => failures.push("CHECKPOINT_MALFORMED".to_string()),
+            }
+            let receipt = trace
+                .pointer("/authorization/authorization")
+                .unwrap_or(&Value::Null);
+            if checkpoint.get("tenant_id") != receipt.get("tenant_id") {
+                failures.push("CHECKPOINT_TENANT_MISMATCH".to_string());
+            }
+            let events = stream.as_array().map(Vec::as_slice).unwrap_or_default();
+            let authorization = trace.get("authorization").unwrap_or(&Value::Null);
+            let authorization_id = receipt
+                .get("authorization_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if !stream_includes(
+                events,
+                authorization_id,
+                &["action.authorized"],
+                authorization,
+            ) {
+                failures.push("CHECKPOINT_AUTHORIZATION_NOT_INCLUDED".to_string());
+            }
+            if let Some(execution) = trace.get("execution").filter(|value| !value.is_null()) {
+                let receipt_id = execution
+                    .pointer("/receipt/receipt_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !stream_includes(
+                    events,
+                    receipt_id,
+                    &["action.executed", "action.failed"],
+                    execution,
+                ) {
+                    failures.push("CHECKPOINT_EXECUTION_NOT_INCLUDED".to_string());
+                }
+            }
+            if failures.is_empty() {
+                "VERIFIED"
+            } else {
+                for failure in &failures {
+                    push_error(&mut result, failure);
+                }
+                "FAILED"
+            }
+        }
+    };
+    result["checks"]["checkpoint"] = json!(checkpoint_check);
+    if let Some(list) = result
+        .pointer_mut("/trust/not_checked")
+        .and_then(Value::as_array_mut)
+    {
+        if checkpoint_check == "NOT_PRESENT" {
+            list.push(json!(
+                "LEDGER_INCLUSION (no checkpoint in the bundle; events are not shown to be in the gate's signed ledger)"
+            ));
+        }
+        list.push(json!(
+            "COMPLETENESS (nothing proves other actions, retries or outcomes are not hidden)"
+        ));
+    }
+    canonicalize(&result)
 }
