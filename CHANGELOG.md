@@ -46,6 +46,14 @@
 - Limit: minor units always assume two decimals; currencies with other exponents (JPY, BHD)
   need the policy limit expressed with that in mind.
 
+### Documentation (forge 5)
+- README: minor units assume two decimals (wrong for JPY, BHD, KWD) and the payment executor
+  is not a complete payment control (per-intent checks only, mock transport).
+- Informational, documented and **not fixed**: **H4** ports are not restricted by the policy
+  prefix or the HTTP allowlist; **D2-a** the output conversion still has no time limit (a
+  hostile custom adapter `__repr__` can block the executor); **D2-b** a large legitimate
+  output is recorded as a degraded summary without a digest of the full output.
+
 ### Security: money parity between the gate and the payment executor (forge 5)
 - **N5-1: `"5."`.** The gate's `parse_minor_units` accepted a decimal point with no digits
   after it; the executor refused it, so the permit was consumed and the receipt FAILED. The

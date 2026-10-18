@@ -595,6 +595,11 @@ tempus-http-executor \
   opt-out); public services that are themselves open relays; or a compromised DNS that
   answers consistently with a public attacker address. Keep network egress rules as the
   real boundary.
+- **Known limits** (informational, not fixed): ports are not restricted (H4, above); the
+  conversion of an adapter's output has a size/node budget but **no time limit** (D2-a: a
+  hostile custom adapter whose `__repr__` sleeps or never returns blocks the executor; the
+  packaged adapters are not affected); and a very large legitimate output is recorded as a
+  degraded summary with **no digest of the full output** (D2-b).
 - The executor sends exactly the URL the policy matched, with no whitespace, control
   characters, backslashes or credentials in it.
 
@@ -631,6 +636,18 @@ tempus-payment-executor \
   --tenant-id acme \
   --secret-key "sk_live_<isolated-payment-key>"
 ```
+
+- **Minor units assume two decimals.** `amount_minor` and the `max_money_amount_minor` limit
+  are read as hundredths (`"25.5"` is `2550`) for every currency. That is wrong for zero-
+  decimal currencies (JPY: `"500"` means 500 yen, but the limit sees 50 000 minor units) and
+  for three-decimal ones (BHD, KWD). Express limits per currency with that in mind, or keep
+  such currencies out of `allowed_currencies`.
+- `money.beneficiary` must be a non-empty string; it is paid exactly as written.
+- **This executor is not a complete payment control.** It checks, per intent, the currency,
+  the beneficiary pattern and one maximum amount, with textual patterns; it has no
+  cumulative, daily or velocity limits, no sanctions/KYC checks, no confirmation of the
+  provider's settlement, and the shipped transport is a mock. Put the real controls
+  (provider-side limits, approvals, reconciliation) at the provider.
 
 ## Performance Benchmarks
 
