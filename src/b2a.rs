@@ -2327,13 +2327,40 @@ fn verify_trace_value(trust: Trust<'_>, trace: &Value) -> Result<String, String>
         .get("authorization")
         .and_then(|value| value.get("action_id"))
         .and_then(Value::as_str);
-    if signed_action_id == Some(action_id) {
+    let unknown = unknown_fields(trace, "trace", TRACE_FIELDS);
+    if signed_action_id == Some(action_id) && unknown.is_empty() {
         return Ok(output);
     }
     let mut result: Value =
         serde_json::from_str(&output).map_err(|e| format!("Internal verification error: {e}"))?;
-    push_error(&mut result, "TRACE_ACTION_ID_MISMATCH");
+    if signed_action_id != Some(action_id) {
+        push_error(&mut result, "TRACE_ACTION_ID_MISMATCH");
+    }
+    for code in &unknown {
+        push_error(&mut result, code);
+    }
     canonicalize(&result)
+}
+
+/// Fields of the trace wrapper that are part of `tempus.action-trace.v1`.
+const TRACE_FIELDS: &[&str] = &["schema_version", "action_id", "authorization", "execution"];
+const BUNDLE_FIELDS: &[&str] = &["schema_version", "action_id", "trace", "checkpoint"];
+const BUNDLE_CHECKPOINT_FIELDS: &[&str] = &["checkpoint", "stream"];
+
+/// Wrapper objects carry unsigned fields only by mistake or by design of an attacker:
+/// anything outside the schema is reported instead of riding along as "verified".
+fn unknown_fields(value: &Value, path: &str, allowed: &[&str]) -> Vec<String> {
+    let Some(object) = value.as_object() else {
+        return Vec::new();
+    };
+    object
+        .keys()
+        .filter(|key| !allowed.contains(&key.as_str()))
+        .map(|key| {
+            let key: String = key.chars().take(64).collect();
+            format!("UNKNOWN_FIELD ({path}.{key})")
+        })
+        .collect()
 }
 
 /// Append an error to a verification result and force status INVALID.
@@ -2599,11 +2626,15 @@ pub(crate) fn verify_bundle_pinned(
     if bundle.get("action_id") != trace.get("action_id") {
         push_error(&mut result, "BUNDLE_ACTION_ID_MISMATCH");
     }
+    for code in unknown_fields(&bundle, "bundle", BUNDLE_FIELDS) {
+        push_error(&mut result, &code);
+    }
 
     let checkpoint_check = match bundle.get("checkpoint").filter(|value| !value.is_null()) {
         None => "NOT_PRESENT",
         Some(section) => {
-            let mut failures: Vec<String> = Vec::new();
+            let mut failures: Vec<String> =
+                unknown_fields(section, "bundle.checkpoint", BUNDLE_CHECKPOINT_FIELDS);
             let checkpoint = section.get("checkpoint").unwrap_or(&Value::Null);
             let stream = section.get("stream").unwrap_or(&Value::Null);
             match crate::events::verify_checkpoint_stream(

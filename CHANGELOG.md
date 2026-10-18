@@ -8,6 +8,10 @@
   first-wins parser or a human read something else. `verify-receipt`, `verify-bundle`,
   `verify-trace` (stored documents) and `checkpoint verify` now reject a repeated object
   key at any depth: status `INVALID`, error / reason code `DUPLICATE_JSON_KEY`, exit 2.
+- **Unknown fields are INVALID.** An unsigned extra field (`"note":"approved by CFO"`) at
+  the top level of a bundle, in the `trace` wrapper or in the bundle's `checkpoint` wrapper
+  verified; the other levels already rejected them. These wrappers now allow only their
+  schema fields: anything else yields `INVALID` with `UNKNOWN_FIELD (<path>)`.
 
 ### Security: executors no longer follow redirects
 - The HTTP, GitHub and Slack executor transports used `urllib.request.urlopen`, which

@@ -167,3 +167,37 @@ def test_duplicate_keys_in_the_stored_database_trace_are_invalid(world, tmp_path
         )
         assert code == 2, out + err
         assert "DUPLICATE_JSON_KEY" in json.loads(out)["errors"]
+
+
+# ------------------------------------------------- 2. unknown (unsigned) fields
+
+
+def _with(world, mutate):
+    bundle = json.loads(json.dumps(world["bundle"]))
+    mutate(bundle)
+    return json.dumps(bundle)
+
+
+@pytest.mark.parametrize(
+    "where,mutate",
+    [
+        ("bundle", lambda b: b.__setitem__("note", "approved by CFO")),
+        ("trace", lambda b: b["trace"].__setitem__("note", "x")),
+        ("checkpoint wrapper", lambda b: b["checkpoint"].__setitem__("note", "x")),
+    ],
+)
+def test_unknown_fields_make_a_bundle_invalid(world, where, mutate):
+    code, out, err = _verify_bundle(world, _with(world, mutate))
+    assert code == 2, f"{where}: {out}{err}"
+    result = json.loads(out)
+    assert result["status"] == "INVALID"
+    assert any(error.startswith("UNKNOWN_FIELD") for error in result["errors"])
+    assert any("note" in error for error in result["errors"])
+
+
+def test_unknown_field_in_a_standalone_trace_is_invalid(world):
+    trace = json.loads(json.dumps(world["trace"]))
+    trace["note"] = "x"
+    code, out, err = _verify_receipt(world, json.dumps(trace))
+    assert code == 2, out + err
+    assert any(e.startswith("UNKNOWN_FIELD") for e in json.loads(out)["errors"])
