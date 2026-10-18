@@ -85,7 +85,7 @@ Software engineering agents generating pull requests can route their output thro
 
 Tempus DDB already ships the necessary components out-of-the-box:
 * **Packaged Reference Executors:**
-  * `tempus-github-executor`: Native support for Personal Access Tokens and installation-scoped **GitHub Apps** (`issues: write`, `pull_requests: write`) with automatic token rotation, HTTP redirect blocking (`_RejectRedirects`), and error sanitization.
+  * `tempus-github-executor`: GitHub writes (issues, pull requests) with a Personal Access Token (or GitHub Enterprise API URL) held only in the executor environment. The HTTP, GitHub and Slack transports refuse HTTP redirects (a 3xx is not followed and `Authorization` is not forwarded; the error names only the status code and target host). This does not cover DNS/IP-based SSRF filtering, and custom transports are the integrator's responsibility. GitHub App installation tokens and automatic rotation are **not implemented** (see ROADMAP).
   * `tempus-slack-executor`: Scoped Slack message and alert dispatch.
 * **Autonomous MCP Server:** Exposed via `tempus mcp start` with workspace boundary lockdown (`TEMPUS_WORKSPACE`) and ambient tool suppression.
 * **Quickstart Verification:** Run `tempus quickstart` to test end-to-end local permit issuance in seconds.
