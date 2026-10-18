@@ -35,6 +35,11 @@ def _load_json_argument(value, label):
     if os.path.isfile(value):
         with open(value, encoding="utf-8") as handle:
             value = handle.read().strip()
+    elif not value.lstrip().startswith("{"):
+        raise ValueError(
+            f"--{label}: file not found: {value} "
+            "(pass the path of an existing JSON file, or a JSON object)"
+        )
     try:
         parsed = json.loads(value)
     except json.JSONDecodeError as exc:
@@ -635,6 +640,24 @@ def _gate(args):
     return TempusDDB(db_path, keyfile)
 
 
+PLACEHOLDER_MARKER = "REPLACE_WITH_"
+
+
+def _find_placeholders(node, path="$"):
+    """Return (json path, value) for every string still holding a template placeholder."""
+    found = []
+    if isinstance(node, str):
+        if PLACEHOLDER_MARKER in node:
+            found.append((path, node))
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            found.extend(_find_placeholders(value, f"{path}.{key}"))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found.extend(_find_placeholders(value, f"{path}[{index}]"))
+    return found
+
+
 def run_install_policy(args):
     """Install a signed deterministic policy and make it active for its tenant."""
     try:
@@ -654,6 +677,16 @@ def run_install_policy(args):
             )
             sys.exit(1)
         spec = _load_json_argument(args.policy, "policy")
+        placeholders = _find_placeholders(json.loads(spec))
+        if placeholders:
+            print(
+                "[ERROR] Policy still contains template placeholders; replace them "
+                "with real values (e.g. the executor's public_key from its key file) "
+                "and try again:\n  "
+                + "\n  ".join(f"{path}: {value}" for path, value in placeholders),
+                file=sys.stderr,
+            )
+            sys.exit(1)
         print(json.dumps(json.loads(_gate(args).install_policy(spec)), indent=2))
     except Exception as exc:
         print(f"[ERROR] Policy installation failed: {exc}", file=sys.stderr)

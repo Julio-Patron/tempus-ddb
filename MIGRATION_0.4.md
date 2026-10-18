@@ -9,7 +9,8 @@ upgrade on copies.
    enforce.
 2. Start the gate once to apply the new tables and identity metadata columns. Existing
    signed registrations are backfilled with their public key as the stable identity ID.
-3. Install a tenant policy based on `config/policy.github.example.json`. Without an
+3. Install a tenant policy based on `config/policy.github.example.json` (replace its
+   `REPLACE_WITH_...` executor placeholder first; `install-policy` refuses it otherwise). Without an
    installed policy the gate denies every action (`POLICY_NOT_INSTALLED`). Earlier
    0.4.x/0.5.x builds seeded an allow-all `tempus.baseline.v1` policy on first use; that
    baseline is no longer created and one left in an existing database is ignored. For

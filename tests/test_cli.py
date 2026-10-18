@@ -584,3 +584,43 @@ def test_cli_install_policy_allow_all_dev_is_explicit_and_warns(tmp_path):
     # doctor does not consider a development allow-all policy production ready
     code, out, err = run_cli(["doctor", "--json"], cwd=tmp_path)
     assert code == 1
+
+
+def test_install_policy_refuses_template_placeholders_and_missing_files(tmp_path):
+    repo = Path(__file__).parent.parent
+    template = (repo / "config" / "policy.github.example.json").read_text()
+    assert "REPLACE_WITH_" in template  # the shipped template is not directly usable
+    code, out, err = run_cli(["init"], cwd=tmp_path)
+    assert code == 0, out + err
+
+    # Unreplaced placeholder: clear error, nothing installed.
+    (tmp_path / "policy.json").write_text(template)
+    code, out, err = run_cli(
+        ["install-policy", "--policy", "policy.json"], cwd=tmp_path
+    )
+    assert code == 1
+    assert "placeholder" in err and "$.constraints.allowed_executors[0]" in err
+    assert json.loads(run_cli(["list-policies"], cwd=tmp_path)[1]) == []
+
+    # Missing file: says so, instead of a JSON parse error.
+    code, out, err = run_cli(
+        ["install-policy", "--policy", "acme-github-policy.json"], cwd=tmp_path
+    )
+    assert code == 1
+    assert "file not found" in err and "acme-github-policy.json" in err
+
+    # With a real executor key the same template installs.
+    code, out, err = run_cli(["keygen", "--output", "executor.keys.json"], cwd=tmp_path)
+    assert code == 0, out + err
+    executor_pub = json.loads(out)["public_key"]
+    replaced = template.replace(
+        "REPLACE_WITH_EXECUTOR_ED25519_PUBLIC_KEY", executor_pub
+    )
+    (tmp_path / "policy.json").write_text(replaced)
+    code, out, err = run_cli(
+        ["install-policy", "--policy", "policy.json"], cwd=tmp_path
+    )
+    assert code == 0, out + err
+    assert json.loads(out)["policy_version"] == "acme-github-v1"
+    policies = json.loads(run_cli(["list-policies"], cwd=tmp_path)[1])
+    assert [p["status"] for p in policies] == ["ACTIVE"]
