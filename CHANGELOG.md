@@ -12,6 +12,12 @@
   the top level of a bundle, in the `trace` wrapper or in the bundle's `checkpoint` wrapper
   verified; the other levels already rejected them. These wrappers now allow only their
   schema fields: anything else yields `INVALID` with `UNKNOWN_FIELD (<path>)`.
+- **An empty `--gate-public-key` is a usage error.** `verify-trace --gate-public-key ""`
+  and `checkpoint verify --gate-public-key ""` (typically an unset `$GATE_KEY`) silently
+  fell back to the unpinned, non-independent mode and exited 0. An empty or whitespace-only
+  `--gate-public-key` / `--executor-public-key` now exits 1 on every verifier; only
+  omitting the option means "not pinned". In Python an empty string already raised;
+  `verify_trace(id, None)` remains the documented unpinned mode.
 
 ### Security: executors no longer follow redirects
 - The HTTP, GitHub and Slack executor transports used `urllib.request.urlopen`, which

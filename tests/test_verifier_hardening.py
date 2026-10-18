@@ -201,3 +201,61 @@ def test_unknown_field_in_a_standalone_trace_is_invalid(world):
     code, out, err = _verify_receipt(world, json.dumps(trace))
     assert code == 2, out + err
     assert any(e.startswith("UNKNOWN_FIELD") for e in json.loads(out)["errors"])
+
+
+# ------------------------------------------- 3. an empty key is never "unpinned"
+
+
+@pytest.mark.parametrize("empty", ["", " ", "   \t"])
+def test_empty_gate_key_is_a_usage_error_on_every_verifier(world, empty):
+    root = world["root"]
+    extra_checkpoint = [
+        "--checkpoint",
+        str(world["chk"]),
+        "--stream",
+        str(world["stream"]),
+    ]
+    commands = [
+        ["verify-trace", "--action-id", world["action_id"]],
+        ["checkpoint", "verify", *extra_checkpoint],
+        ["verify-receipt", "--receipt", str(root / "trace.json")],
+        ["verify-bundle", "--bundle", str(root / "bundle.json")],
+    ]
+    for command in commands:
+        code, out, err = run_cli([*command, "--gate-public-key", empty], cwd=root)
+        assert code == 1, f"{command[0]} {empty!r}: exit {code}\n{out}{err}"
+        assert "VERIFIED" not in out
+        assert "empty" in err
+
+
+def test_empty_executor_key_is_a_usage_error(world):
+    code, out, err = run_cli(
+        [
+            "verify-trace",
+            "--action-id",
+            world["action_id"],
+            "--gate-public-key",
+            world["gate"],
+            "--executor-public-key",
+            "",
+        ],
+        cwd=world["root"],
+    )
+    assert code == 1 and "empty" in err and "VERIFIED" not in out
+
+
+def test_python_api_empty_key_is_an_error_and_none_is_the_documented_unpinned_mode(
+    world,
+):
+    from tempus_ddb import TempusDDB, verify_checkpoint
+
+    db = TempusDDB(str(world["root"] / "tempus.db"), str(world["root"] / "keys.json"))
+    for empty in ("", " "):
+        with pytest.raises(Exception):
+            db.verify_trace(world["action_id"], empty)
+        with pytest.raises(Exception):
+            verify_checkpoint(
+                world["chk"].read_text(), world["stream"].read_text(), empty
+            )
+    unpinned = json.loads(db.verify_trace(world["action_id"], None))
+    assert unpinned["trust"]["independent"] is False

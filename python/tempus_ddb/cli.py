@@ -484,6 +484,11 @@ def _load_public_key(value, label="--gate-public-key"):
     private material is never used or printed).
     """
     raw = value.strip()
+    if not raw:
+        raise ValueError(
+            f"{label} is empty: pass a 64-hex Ed25519 public key or a key file "
+            "(is a shell variable unset?)"
+        )
     if os.path.isfile(value):
         with open(value, encoding="utf-8") as handle:
             raw = handle.read().strip()
@@ -508,7 +513,8 @@ def _load_public_key(value, label="--gate-public-key"):
 def _pinned_keys(args):
     """Return (gate_key or None, [executor keys]) from CLI args, enforcing --strict."""
     gate_arg = getattr(args, "gate_public_key", None)
-    gate_key = _load_public_key(gate_arg) if gate_arg else None
+    # Only an omitted option means "not pinned"; an empty value is a usage error.
+    gate_key = _load_public_key(gate_arg) if gate_arg is not None else None
     executors = [
         _load_public_key(value, "--executor-public-key")
         for value in (getattr(args, "executor_public_key", None) or [])
