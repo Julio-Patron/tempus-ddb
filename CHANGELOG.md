@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Documentation
+- README: a complete, runnable CLI walkthrough (policy, `request-action`, `commit-outcome`,
+  `verify-receipt` / `verify-trace --strict`, `export-bundle` / `verify-bundle`), where the
+  executors' `permit.json` comes from, what `VERIFIED` does and does not mean, and install
+  from the clone until a release includes default-deny and independent verification (PyPI
+  0.5.3 does not). Fixed the demo link that lacked `https://`.
+
 ### Security: verifier hardening (independent forge findings)
 - **Duplicate JSON keys are INVALID.** `serde_json` kept the last value of a repeated key
   (`"amount":"9999.00","amount":"25.00"` verified), so a document could verify while a
