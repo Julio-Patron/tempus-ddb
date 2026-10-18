@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Protocol, Set
 from urllib import error, request
 
 from . import __version__
+from ._http import RedirectRefused, open_request
 from .executor_runtime import (
     ExecutionResult,
     ExecutorRuntime,
@@ -28,10 +29,12 @@ class SlackTransport(Protocol):
 class UrllibSlackTransport:
     """Builtin HTTPS Slack transport."""
 
+    API_BASE = "https://slack.com/api/"
+
     def request(
         self, endpoint: str, token: str, payload: Dict[str, Any]
     ) -> Dict[str, Any]:
-        url = f"https://slack.com/api/{endpoint.lstrip('/')}"
+        url = f"{self.API_BASE}{endpoint.lstrip('/')}"
         data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         headers = {
             "Content-Type": "application/json; charset=utf-8",
@@ -40,7 +43,7 @@ class UrllibSlackTransport:
         }
         req = request.Request(url, data=data, headers=headers, method="POST")
         try:
-            with request.urlopen(req, timeout=30) as response:  # nosec B310
+            with open_request(req, timeout=30) as response:  # nosec B310
                 raw = response.read().decode("utf-8")
                 parsed = json.loads(raw)
                 if not parsed.get("ok", False):
@@ -48,6 +51,8 @@ class UrllibSlackTransport:
                         f"Slack API error: {parsed.get('error', 'unknown')}"
                     )
                 return parsed
+        except RedirectRefused as exc:
+            raise SlackExecutorError(f"Slack transport failed: {exc}") from exc
         except error.HTTPError as exc:
             err_body = exc.read().decode("utf-8", errors="replace")
             raise SlackExecutorError(

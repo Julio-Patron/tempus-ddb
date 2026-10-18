@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Security: executors no longer follow redirects
+- The HTTP, GitHub and Slack executor transports used `urllib.request.urlopen`, which
+  follows 3xx responses and forwards the `Authorization` header to the new host. They now
+  share one opener (`tempus_ddb._http`) that refuses every redirect: the request is not
+  repeated, credentials are not forwarded, and the executor reports a failed outcome
+  (`http_status` / `GITHUB_HTTP_<code>` / `error`) whose message names only the status code
+  and the redirect target host (no `Location` path, query or credentials). Not covered by
+  this change: DNS or IP based SSRF filtering (the allowlist is by host name) and the
+  behaviour of custom transports passed in by an integrator.
+
 ### Security / Breaking
 - **Default-deny.** The gate no longer seeds the allow-all `tempus.baseline.v1` (`"*"`)
   policy on `init`, first agent registration or first use, and tenants without their own

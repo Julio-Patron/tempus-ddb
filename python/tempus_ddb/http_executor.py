@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Protocol, Set
 from urllib import error, parse, request
 
 from . import __version__
+from ._http import RedirectRefused, open_request
 from .executor_runtime import (
     AmbiguousTransportError,
     ExecutionResult,
@@ -96,7 +97,7 @@ class UrllibHttpTransport:
         )
         req = request.Request(url, data=data, headers=headers, method=method)
         try:
-            with request.urlopen(req, timeout=30) as response:  # nosec B310
+            with open_request(req, timeout=30) as response:  # nosec B310
                 raw = response.read().decode("utf-8")
                 try:
                     return (
@@ -106,6 +107,8 @@ class UrllibHttpTransport:
                     )
                 except json.JSONDecodeError:
                     return {"body": raw, "http_status": response.status}
+        except RedirectRefused as exc:
+            raise HttpAPIError(exc.status_code, str(exc)) from exc
         except error.HTTPError as exc:
             err_body = exc.read().decode("utf-8", errors="replace")
             raise HttpAPIError(exc.code, f"HTTP {exc.code}: {err_body}") from exc
