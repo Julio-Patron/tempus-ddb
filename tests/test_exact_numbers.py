@@ -208,3 +208,109 @@ def test_executor_turns_float_and_huge_payload_numbers_into_exact_strings():
             "n": 7,
         }, receipt
         assert os.path.exists(exec_db)
+
+
+# ----------- a custom adapter whose result cannot be JSON must not lose the effect
+
+
+class PayloadAdapter:
+    """A custom adapter: the external effect happens, then a Python object comes back."""
+
+    def __init__(self, payload):
+        self.payload = payload
+        self.executed = 0
+
+    @property
+    def supported_actions(self) -> Set[str]:
+        return {"custom:echo"}
+
+    def execute_action(self, intent: Dict[str, Any]) -> ExecutionResult:
+        self.executed += 1  # the irreversible effect
+        return ExecutionResult(status="SUCCEEDED", payload=self.payload)
+
+
+def _run_adapter(payload, key):
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        tenant = "tenant-degrade"
+        gate, gate_id, agent_id, _, exec_db, exec_key, agent_key = (
+            _setup_gate_and_agents(tmpdir, tenant)
+        )
+        runtime = ExecutorRuntime(
+            executor_db=exec_db,
+            executor_keyfile=exec_key,
+            trusted_gate_id=gate_id,
+            trusted_tenant_id=tenant,
+        )
+        adapter = PayloadAdapter(payload)
+        permit = _create_permit(gate, tenant, agent_id, agent_key, "custom:echo", key)
+        receipt = json.loads(runtime.execute_permit(permit, adapter))
+        assert adapter.executed == 1
+        return receipt
+
+
+def _nested(depth):
+    value: Any = "leaf"
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+def test_decimal_and_datetime_become_exact_strings_and_the_effect_is_recorded():
+    import datetime
+    import decimal
+
+    when = datetime.datetime(2026, 10, 17, 23, 0, tzinfo=datetime.timezone.utc)
+    receipt = _run_adapter(
+        {
+            "amount": decimal.Decimal("19.990"),
+            "big": decimal.Decimal("123456789012345678901234567890.5"),
+            "sci": decimal.Decimal("1E+3"),
+            "at": when,
+            "day": when.date(),
+            "list": [decimal.Decimal("0.10")],
+        },
+        "dec-1",
+    )
+    assert receipt["status"] == "SUCCEEDED", receipt
+    assert receipt["output"] == {
+        "amount": "19.990",
+        "big": "123456789012345678901234567890.5",
+        "sci": "1E+3",
+        "at": "2026-10-17T23:00:00+00:00",
+        "day": "2026-10-17",
+        "list": ["0.10"],
+    }
+
+
+@pytest.mark.parametrize(
+    "name,payload",
+    [
+        ("too deep", _nested(200)),
+        ("bytes", {"raw": b"\xff\x00"}),
+        ("object", {"obj": object()}),
+        ("set", {"s": {1, 2}}),
+    ],
+)
+def test_unrepresentable_results_are_recorded_degraded_not_as_failed(name, payload):
+    receipt = _run_adapter(payload, f"deg-{name}".replace(" ", "-"))
+    assert receipt["status"] == "SUCCEEDED", receipt
+    output = receipt["output"]
+    if name == "too deep":
+        assert output["_tempus_output_degraded"] is True
+        assert "nesting" in output["reason"]
+        assert len(output["repr"]) <= 512
+    elif name == "bytes":
+        assert output == {"raw": "b'\\xff\\x00'"}
+    elif name == "set":
+        assert output == {"s": "{1, 2}"}
+    else:
+        assert output["obj"].startswith("<object object at ")
+
+
+def test_cyclic_result_is_recorded_degraded_and_the_repr_is_bounded():
+    cyclic: list = []
+    cyclic.append(cyclic)
+    receipt = _run_adapter({"loop": cyclic, "pad": "x" * 5000}, "cyc-1")
+    assert receipt["status"] == "SUCCEEDED", receipt
+    assert receipt["output"]["_tempus_output_degraded"] is True
+    assert len(json.dumps(receipt["output"])) < 2000

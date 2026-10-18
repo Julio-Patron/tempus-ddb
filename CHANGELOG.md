@@ -49,7 +49,18 @@
     (`POLICY_NON_DETERMINISTIC_INPUT`); it is now refused before anything is signed.
   - The packaged executors (`ExecutorRuntime`) keep working with downstream answers that
     contain floats or huge integers: the payload is converted (`0.1` -> `"0.1"`, a 30-digit
-    integer -> its exact digits) before the outcome is signed.
+    integer -> its exact digits) before the outcome is signed. The conversion is applied to
+    the value Python already parsed, so a float spelled `19.990` is recorded as `"19.99"`.
+  - **A custom adapter never loses the effect to its own result type.** `Decimal` is
+    recorded as its exact string (`Decimal("19.990")` -> `"19.990"`), `datetime`/`date`/`time`
+    as ISO 8601, and bytes, sets or arbitrary objects as a bounded `repr` (512 characters).
+    A result that cannot be converted at all (nesting beyond 64 levels, cycles) is recorded
+    with the adapter's own status and the marker
+    `{"_tempus_output_degraded": true, "reason": ..., "repr": <bounded>}`. Before, such a
+    result made the runtime record `FAILED` (`EXECUTION_EXCEPTION`) although the external
+    action had happened. Criterion: an adapter result is evidence about an effect that
+    already occurred; degrading its representation is acceptable, recording a failure for a
+    success is not.
 - **VERIFIED now says what was decided and executed.** Results of `verify-receipt`,
   `verify-trace` and `verify-bundle` carry `decision` (`ALLOWED`/`BLOCKED`) and
   `execution_status` (`SUCCEEDED`/`FAILED`, `null` when there is no outcome); both are

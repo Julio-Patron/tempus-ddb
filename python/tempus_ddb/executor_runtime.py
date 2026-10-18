@@ -7,6 +7,8 @@ unknown outcome instead of retrying.
 """
 
 import argparse
+import datetime
+import decimal
 import json
 import sys
 from typing import Any, Dict, NamedTuple, Optional, Protocol, Set
@@ -16,7 +18,27 @@ from ._tempus_ddb import TempusExecutor
 _I64_MIN, _U64_MAX = -(2**63), 2**64 - 1
 
 
-def exact_json(value: Any) -> Any:
+MAX_OUTPUT_DEPTH = 64  # well inside the parser's 128 levels
+MAX_REPR_CHARS = 512
+
+
+class _Unrepresentable(ValueError):
+    """The adapter result has no faithful JSON form."""
+
+
+def _bounded_repr(value: Any) -> str:
+    try:
+        text = repr(value)
+    except Exception:  # a hostile or broken __repr__ must not lose the effect
+        return f"<unrepresentable {type(value).__name__}>"
+    return (
+        text
+        if len(text) <= MAX_REPR_CHARS
+        else text[:MAX_REPR_CHARS] + "...<truncated>"
+    )
+
+
+def exact_json(value: Any, _depth: int = 0) -> Any:
     """Make a payload safe to sign: only integers in i64/u64 range stay numbers.
 
     The gate refuses signed documents that hold floats or larger integers, because JSON
@@ -24,18 +46,53 @@ def exact_json(value: Any) -> Any:
     downstream API answer is not under the executor's control, so such numbers become
     strings (`0.1` -> "0.1", a 30-digit integer -> its exact digits) instead of making the
     outcome of an effect that already happened impossible to record.
+
+    Python values JSON has no form for are converted too: `Decimal` -> its exact string
+    (`Decimal("19.990")` -> "19.990"), `datetime`/`date`/`time` -> ISO 8601, and anything
+    else (bytes, sets, arbitrary objects) -> a bounded `repr`. Nesting deeper than
+    MAX_OUTPUT_DEPTH, and cycles, raise `_Unrepresentable` (see `sanitize_output`).
     """
+    if _depth > MAX_OUTPUT_DEPTH:
+        raise _Unrepresentable(f"nesting deeper than {MAX_OUTPUT_DEPTH} levels")
     if isinstance(value, bool) or value is None or isinstance(value, str):
         return value
     if isinstance(value, int):
         return value if _I64_MIN <= value <= _U64_MAX else str(value)
     if isinstance(value, float):
         return repr(value)
+    if isinstance(value, decimal.Decimal):
+        return str(value)
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value.isoformat()
     if isinstance(value, dict):
-        return {key: exact_json(item) for key, item in value.items()}
+        return {
+            (key if isinstance(key, str) else str(key)): exact_json(item, _depth + 1)
+            for key, item in value.items()
+        }
     if isinstance(value, (list, tuple)):
-        return [exact_json(item) for item in value]
-    return value
+        return [exact_json(item, _depth + 1) for item in value]
+    return _bounded_repr(value)
+
+
+def sanitize_output(payload: Any) -> str:
+    """JSON text of an adapter result that can always be signed.
+
+    Criterion: an adapter result is evidence about an effect that already happened, so a
+    result that cannot be represented must never turn that effect into a recorded FAILED.
+    If the payload cannot be converted (too deep, cyclic, ...), the outcome keeps the
+    adapter's own status and carries a marker with a bounded `repr` instead.
+    """
+    try:
+        return json.dumps(exact_json(payload))
+    except (_Unrepresentable, RecursionError, ValueError, TypeError) as exc:
+        reason = str(exc) if isinstance(exc, _Unrepresentable) else type(exc).__name__
+        return json.dumps(
+            {
+                "_tempus_output_degraded": True,
+                "reason": f"adapter result not representable as JSON: {reason}",
+                "repr": _bounded_repr(payload),
+            }
+        )
 
 
 class ExecutorRuntimeError(RuntimeError):
@@ -145,7 +202,7 @@ class ExecutorRuntime:
             status = (
                 result.status if result.status in {"SUCCEEDED", "FAILED"} else "FAILED"
             )
-            output_json = json.dumps(exact_json(result.payload))
+            output_json = sanitize_output(result.payload)
 
             # 3. Complete and sign execution receipt
             return self._executor.complete_execution(
