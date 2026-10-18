@@ -131,6 +131,16 @@ policy on the permit's intent before consuming it, and read the same intent text
     it. Not solved: a `__repr__` / `__str__` that sleeps or loops cannot be interrupted from
     Python; the conversion has a size bound, not a time bound, and runs adapter code only for
     objects the adapter itself returned.
+    **The degraded marker is visible and cannot be written by an adapter.** The verifiers
+    (`verify-receipt`, `verify-bundle`, `verify-trace`) add `output_degraded`: `true` when
+    the verified outcome's `output` carries `_tempus_output_degraded: true`, `false`
+    otherwise, `null` when nothing verified or there is no outcome; the CLI also prints a
+    NOTE on stderr. Through the runtime an adapter may not use the key `_tempus_output_degraded`
+    anywhere in its result (its result is degraded, with the reason "reserved key"), so there
+    the marker is always the runtime's. Limit: whoever holds the executor key can sign an
+    output with that key by hand; it cannot be told apart cryptographically from the
+    runtime's and is shown the same way. The flag is a signal, not proof of provenance, and
+    `--require-execution` still only looks at the signed status.
     Keys that are not strings become `str(key)`; if two keys would become the same JSON key
     (`{1: "a", "1": "b"}`, which used to keep only `"b"` without a word) the result is
     degraded instead. (`{1: "a", True: "b"}` is one key in Python itself, before the runtime

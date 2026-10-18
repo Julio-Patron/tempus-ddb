@@ -772,6 +772,12 @@ Same exit codes as above (0 VERIFIED, 2 INVALID, 1 usage). Python:
   verifiers report a document containing one as `INVALID`. Send decimals and large values as
   strings (`"amount": "25.00"`). The packaged executors convert such numbers in a
   downstream answer to strings before signing the outcome.
+- `output_degraded` in the result tells you when the executor runtime could not represent
+  the adapter's result in full (too large, too deep, cyclic, conversion error) and recorded
+  a bounded summary under `_tempus_output_degraded` with the adapter's own status. It is
+  `true` / `false`, or `null` when nothing verified; the CLI prints a NOTE on stderr. The
+  marker is written by the executor: anyone holding the executor key can sign one by hand,
+  so it is a visible signal, not proof of how the output was produced.
 - `--gate-public-key` and `--executor-public-key` must not be empty: an empty value (for
   example an unset shell variable) is a usage error (exit 1), never "unpinned".
 - `VERIFIED` alone does not say that the action was allowed or executed: a `BLOCKED`

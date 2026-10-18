@@ -597,3 +597,140 @@ def test_colliding_keys_degrade_instead_of_dropping_a_value(name, payload):
 def test_distinct_keys_still_convert():
     receipt = _run_adapter({1: "a", 2.5: "b", None: "c", "x": "d"}, "d3-ok")
     assert receipt["output"] == {"1": "a", "2.5": "b", "None": "c", "x": "d"}
+
+
+# ----------- D4: a degraded output is visible to the verifier, and cannot be forged by an adapter
+
+
+def _verify_adapter_bundle(payload, key, flags=()):
+    """Run a custom adapter through the real gate and verify the exported bundle."""
+    from test_independent_verify import _pub
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        tenant = "tenant-degrade"
+        gate, gate_id, agent_id, _, exec_db, exec_key, agent_key = (
+            _setup_gate_and_agents(tmpdir, tenant)
+        )
+        runtime = ExecutorRuntime(
+            executor_db=exec_db,
+            executor_keyfile=exec_key,
+            trusted_gate_id=gate_id,
+            trusted_tenant_id=tenant,
+        )
+        permit = _create_permit(gate, tenant, agent_id, agent_key, "custom:echo", key)
+        receipt_text = runtime.execute_permit(permit, PayloadAdapter(payload))
+        receipt = json.loads(receipt_text)
+        gate.commit_outcome_signed(
+            json.loads(permit)["authorization"]["authorization_id"], receipt_text
+        )
+        gate_db = os.path.join(tmpdir, "gate.db")
+        gate_key = os.path.join(tmpdir, "gate.keys.json")
+        bundle = os.path.join(tmpdir, "bundle.json")
+        base = ["--db", gate_db, "--keyfile", gate_key]
+        code, out, err = run_cli(
+            [
+                *base,
+                "export-bundle",
+                "--action-id",
+                receipt["action_id"],
+                "--out",
+                bundle,
+            ]
+        )
+        assert code == 0, out + err
+        code, out, err = run_cli(
+            [
+                "verify-bundle",
+                "--bundle",
+                bundle,
+                "--gate-public-key",
+                _pub(Path(gate_key)),
+                *flags,
+            ]
+        )
+        return receipt, code, json.loads(out), err
+
+
+def test_runtime_degraded_output_is_flagged_by_the_verifier_and_the_cli_says_so():
+    receipt, code, result, err = _verify_adapter_bundle(
+        {"loop": _nested(200)}, "d4-real"
+    )
+    assert receipt["output"]["_tempus_output_degraded"] is True
+    assert code == 0 and result["status"] == "VERIFIED"
+    assert result["output_degraded"] is True
+    assert "degraded" in err.lower()
+
+
+def test_a_normal_output_is_not_flagged():
+    _, code, result, err = _verify_adapter_bundle({"ok": 1}, "d4-normal")
+    assert code == 0 and result["output_degraded"] is False
+    assert "degraded" not in err.lower()
+
+
+def test_an_adapter_cannot_write_the_marker_by_hand_through_the_runtime():
+    forged = {"_tempus_output_degraded": True, "reason": "fake", "repr": "all fine"}
+    for name, payload in (("top", forged), ("nested", {"data": [forged]})):
+        receipt = _run_adapter(payload, f"d4-forged-{name}")
+        assert receipt["status"] == "SUCCEEDED"
+        assert receipt["output"]["_tempus_output_degraded"] is True
+        assert "reserved" in receipt["output"]["reason"]
+        assert receipt["output"]["reason"] != "fake"
+
+
+def test_a_marker_written_by_hand_with_the_executor_key_is_flagged_too(
+    permit_world_cli_d4,
+):
+    """Signing directly (no runtime) cannot be told apart cryptographically; it is shown."""
+    code, out, err = _commit_raw_output(
+        permit_world_cli_d4,
+        '{"_tempus_output_degraded":true,"reason":"hand","repr":"x"}',
+    )
+    assert code == 0, out + err
+    root = permit_world_cli_d4["root"]
+    action_id = permit_world_cli_d4["action_id"]
+    bundle = root / "bundle.json"
+    code, out, err = run_cli(
+        ["export-bundle", "--action-id", action_id, "--out", str(bundle)], cwd=root
+    )
+    assert code == 0, out + err
+    code, out, err = run_cli(
+        [
+            "verify-bundle",
+            "--bundle",
+            str(bundle),
+            "--gate-public-key",
+            permit_world_cli_d4["gate"],
+        ],
+        cwd=root,
+    )
+    assert code == 0 and json.loads(out)["output_degraded"] is True, out + err
+
+
+@pytest.fixture(scope="module")
+def permit_world_cli_d4(tmp_path_factory):
+    return make_world(tmp_path_factory.mktemp("exact-d4"), "d", execute=False)
+
+
+def test_output_degraded_is_null_when_nothing_verified():
+    from test_independent_verify import _pub
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        world = make_world(Path(tmpdir), "n", execute=False)  # permit only, no outcome
+        root = world["root"]
+        bundle = root / "b.json"
+        code, out, err = run_cli(
+            ["export-bundle", "--action-id", world["action_id"], "--out", str(bundle)],
+            cwd=root,
+        )
+        assert code == 0, out + err
+        code, out, err = run_cli(
+            [
+                "verify-bundle",
+                "--bundle",
+                str(bundle),
+                "--gate-public-key",
+                _pub(root / "keys.json"),
+            ],
+            cwd=root,
+        )
+        assert code == 0 and json.loads(out)["output_degraded"] is None, out

@@ -650,6 +650,14 @@ def _apply_requirements(parsed, args):
 def _print_verification(result_json, args=None):
     parsed = _apply_requirements(json.loads(result_json), args)
     print(json.dumps(parsed, indent=2))
+    if parsed.get("output_degraded") is True:
+        print(
+            "NOTE: the executor recorded a degraded output (_tempus_output_degraded): the "
+            "outcome status is signed but its output is a bounded summary, not the full "
+            "result. The marker is written by the executor (anyone holding its key can "
+            "write it).",
+            file=sys.stderr,
+        )
     if parsed.get("status") != "VERIFIED":
         sys.exit(2)
 

@@ -2320,6 +2320,15 @@ fn verify_documents(
     };
     let decision = signed_text(authorization, "/authorization/decision");
     let execution_status = signed_text(execution, "/receipt/status");
+    // Shown, not judged: the runtime marks an output it could not represent in full with
+    // this top-level key. Whoever holds the executor key can also write it by hand, so it
+    // is a visible signal and not proof of how the output was produced.
+    let output_degraded = match (status, execution) {
+        ("VERIFIED", Some(document)) => {
+            json!(document.pointer("/outcome/output/_tempus_output_degraded") == Some(&json!(true)))
+        }
+        _ => Value::Null,
+    };
     canonicalize(&json!({
         "schema_version": TRACE_VERIFICATION_SCHEMA,
         "status": status,
@@ -2328,6 +2337,7 @@ fn verify_documents(
         "phase": phase,
         "decision": decision,
         "execution_status": execution_status,
+        "output_degraded": output_degraded,
         "trust": trust_json(trust, authorization.is_none() && execution.is_some()),
         "checks": {
             "authorization": authorization_check,
@@ -2396,6 +2406,7 @@ fn push_error(result: &mut Value, code: &str) {
     result["status"] = json!("INVALID");
     result["decision"] = Value::Null;
     result["execution_status"] = Value::Null;
+    result["output_degraded"] = Value::Null;
 }
 
 /// Legacy verification: trust root taken from the database itself.

@@ -25,6 +25,10 @@ MAX_OUTPUT_NODES = (
 )
 MAX_OUTPUT_CHARS = 4 * 1024 * 1024  # characters of every string and key kept
 MAX_REPR_CHARS = 512
+# Top-level key of the output the runtime writes when it cannot represent an adapter result.
+# An adapter may not use it anywhere in its own result, so through the runtime the marker is
+# always the runtime's; the verifier shows it as `output_degraded`.
+DEGRADED_MARKER = "_tempus_output_degraded"
 
 _SUMMARY = reprlib.Repr()
 _SUMMARY.maxlevel = 3
@@ -141,6 +145,10 @@ def exact_json(
                 for key, item in value.items():
                     name = key if isinstance(key, str) else str(key)
                     budget.spend(len(name))
+                    if name == DEGRADED_MARKER:
+                        raise _Unrepresentable(
+                            f"the adapter result uses the reserved key {DEGRADED_MARKER}"
+                        )
                     if name in converted:
                         raise _Unrepresentable(
                             f"two keys become the same JSON key {_bounded_repr(name)}"
@@ -174,7 +182,7 @@ def sanitize_output(payload: Any) -> str:
         reason = str(exc) if isinstance(exc, _Unrepresentable) else type(exc).__name__
         return json.dumps(
             {
-                "_tempus_output_degraded": True,
+                DEGRADED_MARKER: True,
                 "reason": f"adapter result not representable as JSON: {reason}",
                 "repr": _summary(payload),
             }
