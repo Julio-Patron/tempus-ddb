@@ -839,9 +839,12 @@ fn money_allowed(
 }
 
 fn parse_minor_units(value: &str) -> Result<u64, String> {
+    // A decimal point must be followed by one or two digits ("5." is not "5"): executors
+    // read this same grammar, and a gate that accepted more would burn permits they refuse.
     let (whole, fractional) = value.split_once('.').unwrap_or((value, ""));
     if whole.is_empty()
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.contains('.') && fractional.is_empty())
         || fractional.len() > 2
         || !fractional.bytes().all(|byte| byte.is_ascii_digit())
     {
@@ -1264,6 +1267,10 @@ mod tests {
             (2550, "USD".into())
         );
         for money in [
+            json!({"amount": "5.", "asset": "USD"}),
+            json!({"amount": "0.", "asset": "USD"}),
+            json!({"amount": ".5", "asset": "USD"}),
+            json!({"amount": "5.5.", "asset": "USD"}),
             json!({"amount": "99999.00", "amount_minor": 1, "asset": "USD"}),
             json!({"amount": "1.00", "currency": "USD", "asset": "EUR"}),
             json!({"amount": "1.00", "currency": "USD", "asset": "usd"}),

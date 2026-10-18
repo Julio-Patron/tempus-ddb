@@ -46,6 +46,13 @@
 - Limit: minor units always assume two decimals; currencies with other exponents (JPY, BHD)
   need the policy limit expressed with that in mind.
 
+### Security: money parity between the gate and the payment executor (forge 5)
+- **N5-1: `"5."`.** The gate's `parse_minor_units` accepted a decimal point with no digits
+  after it; the executor refused it, so the permit was consumed and the receipt FAILED. The
+  gate now refuses `"5."` (a `.` needs one or two digits) with `TEMPUS_INVALID_CONTRACT`.
+  `tests/test_money_amount_parity.py` runs the same amount strings through the real gate
+  and through the executor and requires equal verdicts.
+
 ### Security: the HTTP executor fails closed (forge 5)
 - **H1: credentials without an allowlist.** A policy prefix written without the slash after
   the host (`https://api.example.com*`) also matches `https://api.example.com.evil.net/`, and
