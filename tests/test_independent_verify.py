@@ -512,7 +512,20 @@ def _set(doc, path, value):
         (["checkpoint", "checkpoint", "signature"], "00" * 64),
         (["checkpoint", "stream", 0, "payload_hash"], "00" * 32),
     ],
-    ids=lambda v: ".".join(map(str, v)) if isinstance(v, list) else None,
+    ids=[
+        "money-amount",
+        "decision",
+        "max-ttl",
+        "agent-signature",
+        "outcome-status",
+        "external-reference",
+        "receipt-status",
+        "trace-action-id",
+        "bundle-action-id",
+        "stream-root",
+        "checkpoint-signature",
+        "payload-hash",
+    ],
 )
 def test_tampered_bundle_field_is_invalid(worlds, tmp_path, path, value):
     real, _ = worlds

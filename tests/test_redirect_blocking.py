@@ -17,6 +17,10 @@ from tempus_ddb.http_executor import HttpActionAdapter
 from tempus_ddb.slack_executor import SlackActionAdapter, UrllibSlackTransport
 
 REDIRECT_CODES = [301, 302, 303, 307, 308]
+# Python 3.10's urllib does not treat 308 as a redirect, so the executors
+# report that status as an HTTP error. 3.11+ raises RedirectRefused. Both
+# must fail closed: the second host is never contacted and the action does
+# not succeed. Tests assert that outcome, not one error sentence.
 
 
 class _Server:
@@ -117,7 +121,6 @@ def test_http_executor_refuses_redirects(servers, code):
     assert result.status == "FAILED"
     assert result.payload["http_status"] == code
     text = json.dumps(result.payload)
-    assert "redirect refused" in text and "127.0.0.1" in text
     assert "HTTP-SECRET-TOKEN" not in text and "LOCATION-SECRET-123" not in text
     assert origin.requests[0]["authorization"] == "Bearer HTTP-SECRET-TOKEN"
     assert other.requests == []
@@ -151,7 +154,6 @@ def test_github_executor_refuses_redirects(servers, code):
     assert result.status == "FAILED"
     assert result.payload["error_code"] == f"GITHUB_HTTP_{code}"
     text = json.dumps(result.payload)
-    assert "redirect refused" in text
     assert "GH-SECRET-TOKEN" not in text and "LOCATION-SECRET-123" not in text
     assert origin.requests[0]["authorization"] == "Bearer GH-SECRET-TOKEN"
     assert other.requests == []
@@ -196,7 +198,7 @@ def test_slack_executor_refuses_redirects(servers, monkeypatch, code):
     assert other.requests == [], "redirect was followed to the second host"
     assert result.status == "FAILED"
     text = json.dumps(result.payload)
-    assert "redirect refused" in text
+    assert str(code) in text
     assert "SLACK-SECRET-TOKEN" not in text and "LOCATION-SECRET-123" not in text
     assert origin.requests[0]["authorization"] == "Bearer xoxb-SLACK-SECRET-TOKEN"
     assert other.requests == []
