@@ -1,0 +1,9 @@
+# CI (`.github/workflows/ci.yml`) installs `dtolnay/rust-toolchain@stable`
+# and `release.yml` selects `toolchain: stable`. `Cargo.toml` does not set
+# `rust-version`, so the project has no MSRV below the stable channel.
+# The rustup stable manifest dated 2026-10-15 resolves to 1.99.1; pin that
+# release so local builds match what CI would install today.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
