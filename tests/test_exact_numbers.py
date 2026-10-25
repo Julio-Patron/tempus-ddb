@@ -62,7 +62,19 @@ BIGINT_ATTACKS = [
 ]
 
 
-@pytest.mark.parametrize("attack", FLOAT_ATTACKS)
+@pytest.mark.parametrize(
+    "attack",
+    FLOAT_ATTACKS,
+    ids=[
+        "frac-010",
+        "exp-1e-1",
+        "exp-1E-1",
+        "exp-1-0e-1",
+        "exp-0-1e0",
+        "exp-1e-01",
+        "long-fraction",
+    ],
+)
 def test_other_spellings_of_a_signed_float_are_invalid(tmp_path, attack):
     text = _legacy("legacy_float_bundle.json")
     assert FLOAT_TEXT in text
@@ -71,7 +83,11 @@ def test_other_spellings_of_a_signed_float_are_invalid(tmp_path, attack):
     assert json.loads(out)["status"] == "INVALID"
 
 
-@pytest.mark.parametrize("attack", BIGINT_ATTACKS)
+@pytest.mark.parametrize(
+    "attack",
+    BIGINT_ATTACKS,
+    ids=["h-891", "h-000", "h-float", "g-over-u64", "g-rounded", "k-under-i64"],
+)
 def test_other_spellings_of_a_rounded_huge_integer_are_invalid(tmp_path, attack):
     text = _legacy("legacy_bigint_bundle.json")
     assert BIGINT_TEXT in text
