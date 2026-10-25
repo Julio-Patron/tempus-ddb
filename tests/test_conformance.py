@@ -70,6 +70,7 @@ def test_http_adapter_conformance():
     harness = AdapterConformanceHarness(
         adapter_factory=lambda: HttpActionAdapter(
             auth_header="Bearer secret_token",
+            allowed_domains={"api.example.com"},
             transport=MockHttpTransport(),
         ),
         valid_action_type="http.post",

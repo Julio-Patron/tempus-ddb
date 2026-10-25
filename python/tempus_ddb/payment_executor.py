@@ -1,6 +1,6 @@
 """Credential-isolated Financial / Payment executor for Tempus permits.
 
-This adapter enforces the universal `money` contract envelope (`amount`, `asset`, `beneficiary`),
+This adapter enforces the universal `money` contract envelope (`amount` or `amount_minor`, `asset` or `currency`, `beneficiary`),
 validates minor-unit limits against tenant policy, and keeps payment credentials isolated.
 
 It implements a pluggable `PaymentTransport` interface. Teams can inject their production
@@ -9,7 +9,8 @@ payment provider (Stripe, Wise, banking API) at runtime or rely on the determini
 """
 
 import os
-from typing import Any, Dict, Optional, Protocol, Set
+import re
+from typing import Any, Dict, Optional, Protocol, Set, Tuple
 
 from .executor_runtime import (
     ExecutionResult,
@@ -63,6 +64,71 @@ class MockPaymentTransport:
         }
 
 
+# ASCII digits only (`\d` would take any Unicode digit); same grammar as the gate's
+# `parse_minor_units`: a `.` needs one or two digits, and minor units fit in a u64.
+_DECIMAL_AMOUNT = re.compile(r"([0-9]+)(?:\.([0-9]{1,2}))?")
+_U64_MAX = 2**64 - 1
+
+
+def canonical_money(money: Dict[str, Any]) -> Tuple[str, str]:
+    """(amount, asset) exactly as the gate's policy reads them (`phase3::validate_money`).
+
+    `amount` / `amount_minor` are two spellings of one value and `currency` / `asset` two
+    names of one field. The policy evaluates whichever is present, so an executor must not
+    send one while the policy evaluated the other: if both spellings are present they must
+    agree, and a field of the wrong type is an error, never skipped.
+    """
+    names = {}
+    for field in ("currency", "asset"):
+        if field in money:
+            value = money[field]
+            if not isinstance(value, str) or not value:
+                raise PaymentExecutorError(f"money.{field} must be a non-empty string")
+            names[field] = value
+    if not names:
+        raise PaymentExecutorError("Missing 'asset' (or 'currency') in money")
+    if len(set(names.values())) > 1:
+        raise PaymentExecutorError(
+            "money.currency and money.asset must be the same value"
+        )
+    asset = next(iter(names.values()))
+
+    text = money.get("amount")
+    minor = money.get("amount_minor")
+    if text is not None and not isinstance(text, str):
+        raise PaymentExecutorError("money.amount must be a decimal string")
+    if "amount_minor" in money and (
+        isinstance(minor, bool)
+        or not isinstance(minor, int)
+        or not 0 <= minor <= _U64_MAX
+    ):
+        raise PaymentExecutorError("money.amount_minor must be an unsigned integer")
+    from_text = None
+    if text is not None:
+        match = _DECIMAL_AMOUNT.fullmatch(text)
+        if not match:
+            raise PaymentExecutorError(
+                "money.amount must be an unsigned decimal with at most two fractional digits"
+            )
+        whole = match.group(1).lstrip("0") or "0"
+        if len(whole) > 20:  # also keeps int() away from absurdly long digit strings
+            raise PaymentExecutorError("money.amount is too large")
+        from_text = int(whole) * 100 + int(
+            (match.group(2) or "").ljust(2, "0")
+        )
+        if from_text > _U64_MAX:
+            raise PaymentExecutorError("money.amount is too large")
+    if from_text is not None and minor is not None and from_text != minor:
+        raise PaymentExecutorError(
+            f"money.amount ({from_text} minor units) and money.amount_minor ({minor}) disagree"
+        )
+    if text is not None:
+        return text, asset
+    if minor is None:
+        raise PaymentExecutorError("Missing 'amount' (or 'amount_minor') in money")
+    return f"{minor // 100}.{minor % 100:02d}", asset
+
+
 class PaymentActionAdapter:
     """ActionAdapter implementation for financial disbursements and transfers."""
 
@@ -85,11 +151,11 @@ class PaymentActionAdapter:
         allowed_env = os.environ.get("PAYMENT_ALLOWED_BENEFICIARIES")
         if allowed_beneficiaries is not None:
             self._allowed_beneficiaries = {
-                b.strip().lower() for b in allowed_beneficiaries if b.strip()
+                b.strip() for b in allowed_beneficiaries if b.strip()
             }
         elif allowed_env:
             self._allowed_beneficiaries = {
-                b.strip().lower() for b in allowed_env.split(",") if b.strip()
+                b.strip() for b in allowed_env.split(",") if b.strip()
             }
         else:
             self._allowed_beneficiaries = None
@@ -106,20 +172,19 @@ class PaymentActionAdapter:
                 "Financial action requires a valid 'money' envelope in intent"
             )
 
-        amount = str(money.get("amount", ""))
-        asset = str(money.get("asset", ""))
-        beneficiary = str(money.get("beneficiary", ""))
-
-        if not amount or not asset or not beneficiary:
-            raise PaymentExecutorError(
-                "Missing 'amount', 'asset', or 'beneficiary' in money metadata"
-            )
+        # The same reading the policy evaluated, never a field it skipped.
+        amount, asset = canonical_money(money)
+        # Paid exactly as written: never str() of a null/number/list ("None" was paid).
+        beneficiary = money.get("beneficiary")
+        if not isinstance(beneficiary, str) or not beneficiary:
+            raise PaymentExecutorError("money.beneficiary must be a non-empty string")
 
         if self._allowed_beneficiaries is not None:
-            b_norm = beneficiary.strip().lower()
+            # Compare the value the transport will receive, as written: no strip or
+            # case-folding that would let "ALICE " pass for "alice" and then be paid as is.
             allowed = any(
-                b_norm == ab
-                or (ab.endswith("*") and b_norm.startswith(ab[:-1]))
+                beneficiary == ab
+                or (ab.endswith("*") and beneficiary.startswith(ab[:-1]))
                 or ab == "*"
                 for ab in self._allowed_beneficiaries
             )

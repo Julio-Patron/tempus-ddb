@@ -5,29 +5,33 @@ build-backend = "maturin"
 [project]
 name = "tempus-ddb"
 version = "0.5.3"
-description = "Cryptographic toll gate for autonomous agent actions with single-use permits and tamper-evident receipts"
+description = "Fail-closed security gate for AI agents: every action passes a signed policy or is blocked, with verifiable receipts."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 authors = [
     {name = "Tempus DDB Contributors"}
 ]
-keywords = ["ai", "agents", "authorization", "audit", "cryptography", "github", "mcp", "tamper-evident"]
+keywords = ["ai-agents", "mcp", "policy-engine", "fail-closed", "zero-trust", "audit", "ed25519", "tamper-evident", "agent-security"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: Implementation :: CPython",
-    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Security",
     "Topic :: Security :: Cryptography",
+    "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "mcp>=1.0.0,<2.0.0",
+    "mcp>=1.0.0,<3.0.0",
     "python-dotenv>=1.2.3,<2.0.0"
 ]
 
@@ -38,14 +42,22 @@ dev = [
     "maturin",
     "ruff==0.16.10",
     "bandit",
-    "pip-audit"
+    "pip-audit",
+    # pip-audit scans these transitive copies. certifi before 2026.10.19 bundles
+    # compromised roots. filelock 4.2.1 (the fix) needs Python 3.11, so 3.10
+    # stays on the last release from before those bugs.
+    "certifi>=2026.10.19",
+    "filelock>=4.2.1; python_version>='3.11'",
+    "filelock>=3.8.0,<3.20.4; python_version<'3.11'",
 ]
 
 [project.urls]
-Homepage = "https://github.com/Julio-Patron/tempus-ddb"
-Documentation = "https://julio-patron.github.io/tempus-ddb/"
+Homepage = "https://julio-patron.github.io/tempus-ddb/"
+Documentation = "https://julio-patron.github.io/tempus-ddb/docs.html"
 Repository = "https://github.com/Julio-Patron/tempus-ddb"
 Issues = "https://github.com/Julio-Patron/tempus-ddb/issues"
+Changelog = "https://github.com/Julio-Patron/tempus-ddb/releases"
+"Rust crate" = "https://crates.io/crates/tempus-ddb"
 
 [project.scripts]
 tempus = "tempus_ddb.cli:main"
@@ -63,6 +75,9 @@ module-name = "tempus_ddb._tempus_ddb"
 pythonpath = ["python"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+filterwarnings = [
+    "ignore:tempus. allow-all development policy installed:UserWarning",
+]
 
 [tool.ruff]
 target-version = "py310"

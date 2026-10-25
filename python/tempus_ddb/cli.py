@@ -1,13 +1,22 @@
 import argparse
+import hashlib
 import json
+import math
 import os
 import shutil
 import stat
 import sys
 import time
+import warnings
 
 from . import __version__
-from ._tempus_ddb import TempusDDB, gen_keys
+from ._tempus_ddb import (
+    TempusDDB,
+    gen_keys,
+    verify_bundle,
+    verify_checkpoint,
+    verify_receipt,
+)
 from .mcp_server import main_sync
 
 # --- Default paths (used when global args are not provided) ---
@@ -22,13 +31,54 @@ def _resolve_paths(args):
     return db, keyfile
 
 
+def _non_exact(label, text):
+    raise ValueError(
+        f"NON_EXACT_NUMBER: --{label} holds the number {text}, which is not an integer in "
+        "the i64/u64 range; send decimals and larger values as strings"
+    )
+
+
+def _parse_float(label, text):
+    # Python reads 1e400 as inf and would later write it back as `Infinity`; a float is
+    # refused by the gate anyway, so report it with the same code as every other one.
+    if not math.isfinite(float(text)):
+        _non_exact(label, text)
+    return float(text)
+
+
+def _parse_int(label, text):
+    # `-0` is read as 0 and signed as 0; a spelling that changes on the way is rejected
+    # instead of being silently rewritten.
+    if text.startswith("-") and not text.lstrip("-0"):
+        _non_exact(label, text)
+    try:
+        return int(text)
+    except ValueError:  # beyond Python's integer digit limit
+        _non_exact(label, text[:20] + "...")
+
+
+def _parse_exact(value, label):
+    """json.loads that reports NaN, Infinity, 1e400 and -0 as NON_EXACT_NUMBER."""
+    return json.loads(
+        value,
+        parse_constant=lambda name: _non_exact(label, name),
+        parse_float=lambda text: _parse_float(label, text),
+        parse_int=lambda text: _parse_int(label, text),
+    )
+
+
 def _load_json_argument(value, label):
     """Load a JSON object from a literal string or a file path."""
     if os.path.isfile(value):
         with open(value, encoding="utf-8") as handle:
             value = handle.read().strip()
+    elif not value.lstrip().startswith("{"):
+        raise ValueError(
+            f"--{label}: file not found: {value} "
+            "(pass the path of an existing JSON file, or a JSON object)"
+        )
     try:
-        parsed = json.loads(value)
+        parsed = _parse_exact(value, label)
     except json.JSONDecodeError as exc:
         raise ValueError(
             f"--{label} must be valid JSON or a path to a JSON file: {exc}"
@@ -36,6 +86,24 @@ def _load_json_argument(value, label):
     if not isinstance(parsed, dict):
         raise ValueError(f"--{label} must contain a JSON object")
     return json.dumps(parsed, separators=(",", ":"), sort_keys=True)
+
+
+ALLOW_ALL_DEV_WARNING = (
+    "WARNING: --allow-all-dev installed a development policy that ALLOWS EVERY ACTION "
+    "for every tenant without its own policy. Never use it in production; install a "
+    "real policy with 'tempus install-policy --policy FILE'."
+)
+NON_PRODUCTION_POLICY_PREFIXES = ("tempus.dev-allow-all.v1", "tempus.baseline.v1")
+
+
+def _install_allow_all_dev(db):
+    """Explicit development opt-in; the gate never installs this by itself."""
+    with warnings.catch_warnings():
+        # The CLI prints its own visible warning below.
+        warnings.simplefilter("ignore", UserWarning)
+        bundle = db.install_allow_all_dev_policy()
+    print(ALLOW_ALL_DEV_WARNING, file=sys.stderr)
+    return bundle
 
 
 def run_init(args):
@@ -69,6 +137,22 @@ def run_init(args):
         print("[OK] Tempus DDB ready.")
         print(f"  Keys:  {keyfile}")
         print(f"  DB:    {db_path}")
+        if getattr(args, "allow_all_dev", False):
+            _install_allow_all_dev(db)
+            print("  Policy: allow-all DEVELOPMENT policy (explicit --allow-all-dev)")
+        elif not any(
+            policy.get("status") == "ACTIVE"
+            and not policy.get("policy_version", "").startswith(
+                NON_PRODUCTION_POLICY_PREFIXES
+            )
+            for policy in json.loads(db.list_policies())
+        ):
+            print(
+                "  Policy: none installed - the gate DENIES every action "
+                "(POLICY_NOT_INSTALLED) until you run:\n"
+                "          tempus install-policy --policy FILE   "
+                "(development only: tempus install-policy --allow-all-dev)"
+            )
     except Exception as e:
         print(f"[ERROR] Failed to initialize database: {e}", file=sys.stderr)
         sys.exit(1)
@@ -334,6 +418,10 @@ def run_register_agent(args):
 
         db = TempusDDB(db_path, keyfile if os.path.exists(keyfile) else DEFAULT_KEYFILE)
         metadata = getattr(args, "metadata", "{}") or "{}"
+        try:
+            _parse_exact(metadata, "metadata")  # same NON_EXACT_NUMBER wording as --intent
+        except json.JSONDecodeError:
+            pass  # the gate reports a syntax error with its own message
         result = db.register_agent(public_key, args.alias, metadata)
         parsed = json.loads(result)
         print(f"[OK] Agent '{args.alias}' registered.")
@@ -392,7 +480,7 @@ def run_whoami(args):
 
 
 def run_request_action(args):
-    """Request a fail-closed, single-use authorization for an agent action."""
+    """Request a signed, single-use authorization (ALLOWED or BLOCKED) for an agent action."""
     db_path, gate_keyfile = _resolve_paths(args)
     try:
         intent = _load_json_argument(args.intent, "intent")
@@ -421,15 +509,184 @@ def run_commit_outcome(args):
         sys.exit(1)
 
 
+NOT_INDEPENDENT_WARNING = (
+    "WARNING: NOT INDEPENDENT - no --gate-public-key was given, so the trust root "
+    "comes from the database being verified; a fully forged database verifies "
+    "against itself. Pin the gate public key (published by the gate operator, see "
+    "'tempus whoami') with --gate-public-key HEX|FILE."
+)
+
+
+KEY_FILE_FIELDS = ("public_key", "gate_public_key")
+
+
+def _reject_duplicate_keys(pairs):
+    seen = {}
+    for key, item in pairs:
+        if key in seen:
+            raise ValueError(f"the key {key!r} appears more than once")
+        seen[key] = item
+    return seen
+
+
+def _key_from_json_file(text, path, label):
+    """The one public key a JSON key file names, or ValueError if it is not unambiguous.
+
+    A key file is the verifier's trust root, so nothing is guessed: repeated keys, a
+    candidate field that is empty or not a string, or two candidate fields holding different
+    keys are all errors (the previous code let the last duplicate win and fell through from an
+    empty `public_key` to `gate_public_key`).
+    """
+    try:
+        data = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+    except ValueError as exc:  # includes JSONDecodeError and the duplicate-key error
+        raise ValueError(f"{label}: {path} is not a valid key file: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{label}: {path} must hold a JSON object")
+    candidates = {}
+    for field in KEY_FILE_FIELDS:
+        if field not in data:
+            continue
+        value = data[field]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{label}: {field} in {path} must be a non-empty string")
+        candidates[field] = value.strip().lower()
+    if not candidates:
+        raise ValueError(f"{label}: no public_key field in {path}")
+    if len(set(candidates.values())) > 1:
+        raise ValueError(
+            f"{label}: {path} is ambiguous: public_key and gate_public_key differ"
+        )
+    return next(iter(candidates.values()))
+
+
+def _load_public_key(value, label="--gate-public-key"):
+    """Resolve a public key given as 64 hex chars or as a file path.
+
+    A file may hold the bare hex key or a JSON object with a "public_key" field
+    (a gate or identity key file also works: only the public part is read and
+    private material is never used or printed).
+    """
+    raw = value.strip()
+    if not raw:
+        raise ValueError(
+            f"{label} is empty: pass a 64-hex Ed25519 public key or a key file "
+            "(is a shell variable unset?)"
+        )
+    if os.path.isfile(value):
+        with open(value, encoding="utf-8") as handle:
+            raw = handle.read().strip()
+        if raw.startswith(("{", "[")):
+            raw = _key_from_json_file(raw, value, label)
+    key = raw.lower()
+    if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
+        raise ValueError(
+            f"{label} must be 64 hex characters (Ed25519 public key) or a file "
+            "containing one"
+        )
+    return key
+
+
+def _pinned_keys(args):
+    """Return (gate_key or None, [executor keys]) from CLI args, enforcing --strict."""
+    gate_arg = getattr(args, "gate_public_key", None)
+    # Only an omitted option means "not pinned"; an empty value is a usage error.
+    gate_key = _load_public_key(gate_arg) if gate_arg is not None else None
+    executors = [
+        _load_public_key(value, "--executor-public-key")
+        for value in (getattr(args, "executor_public_key", None) or [])
+    ]
+    if executors and gate_key is None:
+        raise ValueError("--executor-public-key requires --gate-public-key")
+    if gate_key is None and getattr(args, "strict", False):
+        raise ValueError(
+            "--strict requires --gate-public-key: independent verification must "
+            "not trust the database's own root of trust"
+        )
+    return gate_key, executors
+
+
+def _read_text_argument(value, label):
+    """Read literal JSON, a file path, or '-' for stdin."""
+    if value == "-":
+        return sys.stdin.read()
+    if os.path.isfile(value):
+        with open(value, encoding="utf-8") as handle:
+            return handle.read()
+    if value.lstrip().startswith("{"):
+        return value
+    raise ValueError(f"--{label}: file not found: {value}")
+
+
+REQUIREMENT_NOT_MET = "REQUIREMENT_NOT_MET"
+
+
+def _apply_requirements(parsed, args):
+    """Turn a VERIFIED result into INVALID when a --require-* condition is unmet.
+
+    The signatures are checked first; these flags then say what the verified evidence
+    must show (so an exit code of 0 can be read as "authorized and executed").
+    """
+    if parsed.get("status") != "VERIFIED":
+        return parsed
+    unmet = []
+    require_decision = getattr(args, "require_decision", None)
+    if require_decision and parsed.get("decision") != require_decision:
+        unmet.append(
+            f"decision (required {require_decision}, got {parsed.get('decision')})"
+        )
+    if getattr(args, "require_execution", False) and (
+        parsed.get("execution_status") != "SUCCEEDED"
+    ):
+        unmet.append(
+            f"execution (required SUCCEEDED, got {parsed.get('execution_status')})"
+        )
+    if getattr(args, "require_checkpoint", False) and (
+        parsed.get("checks", {}).get("checkpoint") != "VERIFIED"
+    ):
+        unmet.append(
+            f"checkpoint (required VERIFIED, got "
+            f"{parsed.get('checks', {}).get('checkpoint', 'NOT_PRESENT')})"
+        )
+    if unmet:
+        parsed["status"] = "INVALID"
+        parsed.setdefault("errors", []).extend(
+            f"{REQUIREMENT_NOT_MET} ({item})" for item in unmet
+        )
+    return parsed
+
+
+def _print_verification(result_json, args=None):
+    parsed = _apply_requirements(json.loads(result_json), args)
+    print(json.dumps(parsed, indent=2))
+    if parsed.get("output_degraded") is True:
+        print(
+            "NOTE: the executor recorded a degraded output (_tempus_output_degraded): the "
+            "outcome status is signed but its output is a bounded summary, not the full "
+            "result. The marker is written by the executor (anyone holding its key can "
+            "write it).",
+            file=sys.stderr,
+        )
+    if parsed.get("status") != "VERIFIED":
+        sys.exit(2)
+
+
 def run_trace(args, *, verify=False):
     """Read or verify a B2A action trace."""
     db_path, gate_keyfile = _resolve_paths(args)
     try:
+        gate_key, executors = _pinned_keys(args) if verify else (None, [])
         db = TempusDDB(db_path, gate_keyfile)
-        result = (
-            db.verify_trace(args.action_id) if verify else db.get_trace(args.action_id)
-        )
+        if verify and gate_key:
+            result = db.verify_trace(args.action_id, gate_key, executors)
+        elif verify:
+            print(NOT_INDEPENDENT_WARNING, file=sys.stderr)
+            result = db.verify_trace(args.action_id)
+        else:
+            result = db.get_trace(args.action_id)
         parsed = json.loads(result)
+        if verify:
+            parsed = _apply_requirements(parsed, args)
         print(json.dumps(parsed, indent=2))
         if verify and parsed.get("status") == "INVALID":
             sys.exit(2)
@@ -441,15 +698,153 @@ def run_trace(args, *, verify=False):
         sys.exit(1)
 
 
+def run_verify_receipt(args):
+    """Verify a standalone receipt (trace, permit or outcome JSON) without a database."""
+    try:
+        gate_key, executors = _pinned_keys(args)
+        if gate_key is None:
+            raise ValueError("--gate-public-key is required")
+        receipt = _read_text_argument(args.receipt, "receipt")
+        result = verify_receipt(receipt, gate_key, executors or None)
+    except Exception as exc:
+        print(f"[ERROR] Receipt verification failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+    _print_verification(result, args)
+
+
+def run_export_bundle(args):
+    """Write one action as a self-contained evidence bundle (no private keys)."""
+    db_path, keyfile = _resolve_paths(args)
+    try:
+        if os.path.exists(args.out) and not args.force:
+            raise ValueError(f"{args.out} already exists (use --force to overwrite)")
+        db = TempusDDB(db_path, keyfile)
+        if args.create_checkpoint:
+            trace = json.loads(db.get_trace(args.action_id))
+            tenant = trace["authorization"]["authorization"]["tenant_id"]
+            db.create_checkpoint(tenant)
+        bundle = db.export_bundle(args.action_id, args.max_stream_events)
+        with open(args.out, "w", encoding="utf-8") as handle:
+            handle.write(bundle)
+        has_checkpoint = json.loads(bundle).get("checkpoint") is not None
+        print(
+            json.dumps(
+                {
+                    "schema_version": "tempus.evidence-bundle.v1",
+                    "action_id": args.action_id,
+                    "out": args.out,
+                    "bytes": len(bundle.encode("utf-8")),
+                    "sha256": hashlib.sha256(bundle.encode("utf-8")).hexdigest(),
+                    "checkpoint_included": has_checkpoint,
+                },
+                indent=2,
+            )
+        )
+        if not has_checkpoint:
+            print(
+                "NOTE: no checkpoint in the bundle (none covers this action yet, or "
+                "its stream exceeds --max-stream-events): ledger inclusion cannot be "
+                "shown. Re-run with --create-checkpoint to include one.",
+                file=sys.stderr,
+            )
+    except Exception as exc:
+        print(f"[ERROR] Bundle export failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def run_verify_bundle(args):
+    """Verify an evidence bundle without a database, against a pinned gate key."""
+    try:
+        gate_key, executors = _pinned_keys(args)
+        if gate_key is None:
+            raise ValueError("--gate-public-key is required")
+        bundle = _read_text_argument(args.bundle, "bundle")
+        result = verify_bundle(bundle, gate_key, executors or None)
+    except Exception as exc:
+        print(f"[ERROR] Bundle verification failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+    _print_verification(result, args)
+
+
 def _gate(args):
     db_path, keyfile = _resolve_paths(args)
     return TempusDDB(db_path, keyfile)
 
 
+PLACEHOLDER_MARKER = "REPLACE_WITH_"
+
+
+def _find_placeholders(node, path="$"):
+    """Return (json path, value) for every string still holding a template placeholder."""
+    found = []
+    if isinstance(node, str):
+        if PLACEHOLDER_MARKER in node:
+            found.append((path, node))
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            found.extend(_find_placeholders(value, f"{path}.{key}"))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found.extend(_find_placeholders(value, f"{path}[{index}]"))
+    return found
+
+
+def _find_prefix_url_patterns(spec):
+    """`allowed_resources` URL prefixes with no `/` between the host and the `*`.
+
+    Patterns are plain prefixes: `https://api.example.com*` also matches
+    `https://api.example.com.evil.net/` and `https://api.example.com:8443/`.
+    """
+    constraints = spec.get("constraints") if isinstance(spec, dict) else None
+    patterns = constraints.get("allowed_resources") if isinstance(constraints, dict) else []
+    found = []
+    for pattern in patterns if isinstance(patterns, list) else []:
+        if not isinstance(pattern, str) or not pattern.endswith("*"):
+            continue
+        scheme, separator, rest = pattern.partition("://")
+        if separator and scheme in ("http", "https") and "/" not in rest[:-1]:
+            found.append(pattern)
+    return found
+
+
 def run_install_policy(args):
     """Install a signed deterministic policy and make it active for its tenant."""
     try:
+        if args.allow_all_dev:
+            if args.policy:
+                print(
+                    "[ERROR] --allow-all-dev cannot be combined with --policy",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print(json.dumps(json.loads(_install_allow_all_dev(_gate(args))), indent=2))
+            return
+        if not args.policy:
+            print(
+                "[ERROR] Provide --policy FILE (or --allow-all-dev for local development)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         spec = _load_json_argument(args.policy, "policy")
+        placeholders = _find_placeholders(json.loads(spec))
+        if placeholders:
+            print(
+                "[ERROR] Policy still contains template placeholders; replace them "
+                "with real values (e.g. the executor's public_key from its key file) "
+                "and try again:\n  "
+                + "\n  ".join(f"{path}: {value}" for path, value in placeholders),
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        for pattern in _find_prefix_url_patterns(json.loads(spec)):
+            print(
+                f"WARNING: allowed_resources pattern '{pattern}' has no '/' after the "
+                "host, so it is a plain prefix that also matches other hosts "
+                "(https://api.example.com.evil.net/) and ports. Name the host and add "
+                "the slash (e.g. 'https://api.example.com/*') and pin the hosts with the "
+                "executor's --allowed-domains.",
+                file=sys.stderr,
+            )
         print(json.dumps(json.loads(_gate(args).install_policy(spec)), indent=2))
     except Exception as exc:
         print(f"[ERROR] Policy installation failed: {exc}", file=sys.stderr)
@@ -560,6 +955,7 @@ def run_checkpoint(args):
             sys.exit(1)
     elif cmd == "verify":
         try:
+            gate_key, _ = _pinned_keys(args)
             chk_raw = args.checkpoint
             if os.path.isfile(chk_raw):
                 with open(chk_raw, "r", encoding="utf-8") as f:
@@ -570,9 +966,23 @@ def run_checkpoint(args):
                 with open(stream_raw, "r", encoding="utf-8") as f:
                     stream_raw = f.read().strip()
 
-            gate = _gate(args)
-            res_str = gate.verify_checkpoint_stream(chk_raw, stream_raw)
-            result = json.loads(res_str)
+            if gate_key:
+                # Independent: no database and no private key file involved.
+                res_str = verify_checkpoint(chk_raw, stream_raw, gate_key)
+                result = json.loads(res_str)
+                result["trust"] = {
+                    "mode": "PINNED_GATE_KEY",
+                    "independent": True,
+                    "gate_public_key": gate_key,
+                }
+            else:
+                print(NOT_INDEPENDENT_WARNING, file=sys.stderr)
+                gate = _gate(args)
+                result = json.loads(gate.verify_checkpoint_stream(chk_raw, stream_raw))
+                result["trust"] = {
+                    "mode": "LOCAL_KEYFILE_OR_DATABASE_ROOT",
+                    "independent": False,
+                }
             print(json.dumps(result, indent=2))
             if result.get("status") != "VERIFIED":
                 sys.exit(2)
@@ -638,11 +1048,24 @@ def run_doctor(args):
             )
             policies = json.loads(gate.list_policies())
             active = [policy for policy in policies if policy.get("status") == "ACTIVE"]
-            add(
-                "active_policy",
-                "PASS" if active else "FAIL",
-                f"active={len(active)}",
-            )
+            dev_only = [
+                policy
+                for policy in active
+                if policy.get("policy_version", "").startswith(
+                    NON_PRODUCTION_POLICY_PREFIXES
+                )
+            ]
+            if not active:
+                add("active_policy", "FAIL", "none installed: every action is denied")
+            elif dev_only:
+                add(
+                    "active_policy",
+                    "FAIL",
+                    "development allow-all policy is active: "
+                    + ", ".join(p["policy_version"] for p in dev_only),
+                )
+            else:
+                add("active_policy", "PASS", f"active={len(active)}")
         except Exception as exc:
             add("database", "FAIL", str(exc))
     if args.github:
@@ -671,12 +1094,69 @@ def run_doctor(args):
         sys.exit(1)
 
 
+def _add_pin_arguments(parser, *, required=False, executors=True):
+    """Arguments that pin the verifier's trust root out of band."""
+    parser.add_argument(
+        "--gate-public-key",
+        required=required,
+        metavar="HEX|FILE",
+        help="Gate Ed25519 public key (64 hex chars, or a file holding it) pinned "
+        "by the verifier. Without it the result is NOT independent",
+    )
+    if executors:
+        parser.add_argument(
+            "--executor-public-key",
+            action="append",
+            metavar="HEX|FILE",
+            help="Pin the executor public key (repeatable; requires --gate-public-key)",
+        )
+    if not required:
+        parser.add_argument(
+            "--strict",
+            action="store_true",
+            help="Refuse to run without --gate-public-key",
+        )
+
+
+def _add_require_arguments(parser, *, checkpoint=False):
+    """Conditions the verified evidence must meet for the command to exit 0."""
+    parser.add_argument(
+        "--require-execution",
+        action="store_true",
+        help="Exit 2 unless the evidence contains a verified execution with status "
+        "SUCCEEDED (a BLOCKED, FAILED or missing outcome is not enough)",
+    )
+    parser.add_argument(
+        "--require-decision",
+        choices=["ALLOWED", "BLOCKED"],
+        help="Exit 2 unless the gate's signed decision equals this value",
+    )
+    if checkpoint:
+        parser.add_argument(
+            "--require-checkpoint",
+            action="store_true",
+            help="Exit 2 unless the bundle holds a checkpoint that verifies and "
+            "includes the permit and the outcome",
+        )
+
+
 def run_version():
     print(f"tempus {__version__}")
 
 
+class _UsageErrorParser(argparse.ArgumentParser):
+    """argparse exits 2 on a usage error, which would collide with INVALID (2).
+
+    Exit codes: 0 success / VERIFIED, 1 usage or operational error, 2 INVALID.
+    """
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(1, f"{self.prog}: error: {message}\n")
+
+
 def main():
-    parser = argparse.ArgumentParser(
+    parser = _UsageErrorParser(
         prog="tempus",
         description="Tempus DDB - The B2A security gate for autonomous agent actions",
     )
@@ -696,7 +1176,12 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=False)
 
     # init
-    subparsers.add_parser("init", help="Initialize keys and database")
+    init_p = subparsers.add_parser("init", help="Initialize keys and database")
+    init_p.add_argument(
+        "--allow-all-dev",
+        action="store_true",
+        help="DEVELOPMENT ONLY: also install an allow-all policy (default is deny-all)",
+    )
 
     keygen_p = subparsers.add_parser(
         "keygen", help="Generate a workload Ed25519 keypair"
@@ -788,7 +1273,12 @@ def main():
     install_policy_p = subparsers.add_parser(
         "install-policy", help="Sign and activate a deterministic policy bundle"
     )
-    install_policy_p.add_argument("--policy", required=True, help="Policy JSON or file")
+    install_policy_p.add_argument("--policy", help="Policy JSON or file")
+    install_policy_p.add_argument(
+        "--allow-all-dev",
+        action="store_true",
+        help="DEVELOPMENT ONLY: install a signed policy that allows every action",
+    )
     subparsers.add_parser(
         "list-policies", help="List active and retired signed policies"
     )
@@ -860,6 +1350,57 @@ def main():
         "verify-trace", help="Verify an action trace end to end"
     )
     verify_trace_p.add_argument("--action-id", required=True)
+    _add_pin_arguments(verify_trace_p)
+    _add_require_arguments(verify_trace_p)
+
+    verify_receipt_p = subparsers.add_parser(
+        "verify-receipt",
+        help="Verify a standalone receipt (trace/permit/outcome JSON) with no "
+        "database, against a pinned gate public key",
+    )
+    verify_receipt_p.add_argument(
+        "--receipt",
+        required=True,
+        help="Receipt JSON file (or '-' for stdin): tempus.action-trace.v1, "
+        "tempus.authorization-result.v1 or tempus.execution-result.v1",
+    )
+    _add_pin_arguments(verify_receipt_p, required=True)
+    _add_require_arguments(verify_receipt_p)
+
+    export_bundle_p = subparsers.add_parser(
+        "export-bundle",
+        help="Export one action as a single self-contained evidence bundle "
+        "(trace, signed policy, checkpoint if any; no private keys)",
+    )
+    export_bundle_p.add_argument("--action-id", required=True)
+    export_bundle_p.add_argument("--out", required=True, help="Bundle file to write")
+    export_bundle_p.add_argument(
+        "--create-checkpoint",
+        action="store_true",
+        help="Sign a fresh checkpoint for the tenant first so the bundle can show "
+        "ledger inclusion (needs the gate key)",
+    )
+    export_bundle_p.add_argument(
+        "--max-stream-events",
+        type=int,
+        default=None,
+        help="Omit the checkpoint if its event stream is larger than this "
+        "(default 10000)",
+    )
+    export_bundle_p.add_argument(
+        "--force", action="store_true", help="Overwrite an existing --out file"
+    )
+
+    verify_bundle_p = subparsers.add_parser(
+        "verify-bundle",
+        help="Verify an evidence bundle with no database, against a pinned gate "
+        "public key",
+    )
+    verify_bundle_p.add_argument(
+        "--bundle", required=True, help="Bundle JSON file (or '-' for stdin)"
+    )
+    _add_pin_arguments(verify_bundle_p, required=True)
+    _add_require_arguments(verify_bundle_p, checkpoint=True)
 
     # checkpoint subcommands
     chk_parser = subparsers.add_parser(
@@ -900,6 +1441,7 @@ def main():
     chk_verify.add_argument(
         "--stream", required=True, help="Event stream JSON array string or file path"
     )
+    _add_pin_arguments(chk_verify, executors=False)
 
     args = parser.parse_args()
 
@@ -954,6 +1496,12 @@ def main():
             run_trace(args)
         elif args.command == "verify-trace":
             run_trace(args, verify=True)
+        elif args.command == "verify-receipt":
+            run_verify_receipt(args)
+        elif args.command == "export-bundle":
+            run_export_bundle(args)
+        elif args.command == "verify-bundle":
+            run_verify_bundle(args)
         elif args.command == "checkpoint":
             run_checkpoint(args)
         elif args.command is None:

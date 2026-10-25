@@ -31,7 +31,7 @@ sequenceDiagram
     Exec->>Gate: Commit signed execution outcome (status, external_ref, state_hash)
     Gate->>Gate: Atomically record receipt & invalidate permit
     Gate-->>Agent: Final verifiable execution receipt
-    Note over Dev,Ext: Any auditor can run `tempus verify-trace` offline without API access
+    Note over Dev,Ext: An auditor with the pinned gate public key can run `tempus verify-bundle` offline without API access
 ```
 
 ---
@@ -111,11 +111,11 @@ Dual-signed by Gate and Executor upon completion:
 
 ## 🔒 Security Checklist for Production
 
-- [x] **Zero Credential Ambient Access:** `GITHUB_TOKEN`, RSA PEM private keys, and `SLACK_BOT_TOKEN` are present **only** in the executor environment, never in MCP client processes (Cursor, Claude, OpenClaw).
-- [x] **Fail-Closed Redirect Protection:** HTTP transport enforces `_RejectRedirects` to prevent leaking Authorization headers to unauthorized endpoints.
-- [x] **Strict Installation Scoping:** When using GitHub Apps, tokens are minted with minimal required permissions (`issues: write` or `pull_requests: write`) and bound exclusively to the target repository.
-- [x] **Replay Prevention:** A consumed permit cannot be reused. Re-executing an existing trial fails closed.
-- [x] **Offline Verifiability:** Any auditor can verify the entire trace using `tempus verify-trace --action-id <id>` with only public keys.
+- [x] **Zero Credential Ambient Access:** `GITHUB_TOKEN` and `SLACK_BOT_TOKEN` are present **only** in the executor environment, never in MCP client processes (Cursor, Claude, OpenClaw).
+- [x] **Redirect Protection:** the HTTP, GitHub and Slack executor transports share one opener (`tempus_ddb/_http.py`) that refuses every 3xx: the redirect is not followed, `Authorization` is not forwarded, and the executor reports a failed outcome naming only the status code and the redirect target host. Not covered: DNS-based SSRF (the HTTP executor rejects `localhost` and literal private/loopback IPs and applies an optional domain allowlist by name, but does not resolve names or pin addresses) and custom transports supplied by an integrator.
+- [ ] **Strict Installation Scoping (not implemented):** GitHub App installation tokens are not minted by the packaged executor; it uses the token you provide. Scope that token to the target repository and to `issues: write` / `pull_requests: write` yourself. A GitHub App deployment path is on the ROADMAP.
+- [x] **Replay Prevention:** A consumed permit cannot be reused: re-executing it is rejected (single-instance executor).
+- [x] **Offline Verifiability:** An auditor who obtains the gate public key out of band can verify an exported receipt or evidence bundle with `tempus verify-receipt` / `tempus verify-bundle --gate-public-key <hex>` and no database. `verify-trace` without a pinned key trusts the database's own root and is marked NOT independent. Limits: omitted outcomes, global single use and gate-key compromise are not covered.
 - [ ] **Operator Consideration:** Determine whether production repositories (e.g. `main` branch merges) require a secondary human approval step before permit issuance.
 
 ---

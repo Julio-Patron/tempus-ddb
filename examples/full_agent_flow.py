@@ -30,6 +30,7 @@ def main():
         executor_id = public_key(executor_keys)
         gate = TempusDDB(str(db_path), str(gate_keys))
         gate.register_agent(gate_id, "tempus-gate", '{"can_delegate":true}')
+        gate.install_allow_all_dev_policy()  # demo only: explicit allow-all (default is deny-all)
         gate.register_agent(agent_id, "mission-agent", "{}")
         gate.register_agent(executor_id, "mission-executor", "{}")
 

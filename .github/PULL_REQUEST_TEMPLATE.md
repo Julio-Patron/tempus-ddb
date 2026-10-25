@@ -26,6 +26,6 @@ List the exact commands and relevant manual checks performed.
 - [ ] Rust format, Clippy, and tests pass where applicable.
 - [ ] Ruff and pytest pass where applicable.
 - [ ] New behavior has positive and negative test coverage.
-- [ ] Unknown or unsupported states still fail closed.
+- [ ] Unknown or unsupported states are still rejected or denied (never allowed).
 - [ ] Public contracts and migration impact were reviewed.
 - [ ] Documentation and `CHANGELOG.md` were updated when needed.

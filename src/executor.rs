@@ -473,6 +473,7 @@ impl MediatedExecutor {
         if !matches!(status, "SUCCEEDED" | "FAILED") {
             return Err("Execution status must be SUCCEEDED or FAILED".to_string());
         }
+        crate::strict_json::reject_inexact_numbers(&output, "output")?;
         let state = self
             .storage
             .get_state(authorization_id)?

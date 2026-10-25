@@ -63,6 +63,7 @@ fn b2a_authorize_execute_verify_and_replay_guards() {
             .unwrap(),
     );
     assert_eq!(root["registration"]["registered_by"], gate_id);
+    storage.install_allow_all_dev_policy().unwrap(); // explicit dev opt-in
     assert!(storage.verify_agent(&gate_id).unwrap());
     storage
         .register_agent(&agent_id, "buyer-agent", "{}")
@@ -232,6 +233,7 @@ fn trace_verification_detects_receipt_tampering() {
     )
     .unwrap();
     storage.register_agent(&gate_id, "gate", "{}").unwrap();
+    storage.install_allow_all_dev_policy().unwrap(); // explicit dev opt-in
     storage.register_agent(&agent_id, "agent", "{}").unwrap();
     let authorization = parse(
         &storage
@@ -283,6 +285,7 @@ fn phase2_receipts_remain_historically_verifiable_but_not_consumable() {
     )
     .unwrap();
     storage.register_agent(&gate_id, "gate", "{}").unwrap();
+    storage.install_allow_all_dev_policy().unwrap(); // explicit dev opt-in
     storage.register_agent(&agent_id, "agent", "{}").unwrap();
     storage
         .register_agent(&executor_id, "executor", "{}")
@@ -464,19 +467,18 @@ fn phase3_policy_rotation_and_emergency_revocation_are_enforced() {
         "vendor-api/credits",
     ));
     nondeterministic_intent["input"]["ratio"] = json!(1.5);
-    let nondeterministic = parse(
-        &storage
-            .request_action(
-                &nondeterministic_intent.to_string(),
-                agent_v1_keyfile.to_str().unwrap(),
-                30,
-            )
-            .unwrap(),
-    );
-    assert_eq!(nondeterministic["authorization"]["decision"], "BLOCKED");
-    assert_eq!(
-        nondeterministic["authorization"]["reason_codes"][0],
-        "POLICY_NON_DETERMINISTIC_INPUT"
+    // A float in the input can be spelled several ways for one f64, so it is refused when
+    // the intent arrives instead of being signed (it no longer yields a signed denial).
+    let nondeterministic = storage
+        .request_action(
+            &nondeterministic_intent.to_string(),
+            agent_v1_keyfile.to_str().unwrap(),
+            30,
+        )
+        .unwrap_err();
+    assert!(
+        nondeterministic.starts_with("NON_EXACT_NUMBER"),
+        "{nondeterministic}"
     );
 
     let mut cross_tenant_intent = parse(&intent(
@@ -633,6 +635,7 @@ fn test_segregation_of_duties_proposer_cannot_execute() {
     storage
         .register_agent(&gate_id, "gate", r#"{"can_delegate":true}"#)
         .unwrap();
+    storage.install_allow_all_dev_policy().unwrap(); // explicit dev opt-in
     storage
         .register_agent(&agent_id, "agent-both", "{}")
         .unwrap();
@@ -663,6 +666,201 @@ fn test_segregation_of_duties_proposer_cannot_execute() {
     );
 }
 
+struct Gate {
+    _temp: tempfile::TempDir,
+    db_path: std::path::PathBuf,
+    gate_keyfile: std::path::PathBuf,
+    agent_keyfile: std::path::PathBuf,
+    agent_id: String,
+}
+
+impl Gate {
+    /// Fresh gate with a registered root and agent, and NO policy installed.
+    fn new() -> (Self, SqliteStorage) {
+        let temp = tempfile::tempdir().unwrap();
+        let gate_keyfile = temp.path().join("gate.keys.json");
+        let agent_keyfile = temp.path().join("agent.keys.json");
+        generate_keypair(gate_keyfile.to_str().unwrap()).unwrap();
+        generate_keypair(agent_keyfile.to_str().unwrap()).unwrap();
+        let gate = Gate {
+            db_path: temp.path().join("tempus.db"),
+            agent_id: public_key(&agent_keyfile),
+            gate_keyfile,
+            agent_keyfile,
+            _temp: temp,
+        };
+        let storage = gate.open();
+        storage
+            .register_agent(&public_key(&gate.gate_keyfile), "gate", "{}")
+            .unwrap();
+        storage
+            .register_agent(&gate.agent_id, "agent", "{}")
+            .unwrap();
+        (gate, storage)
+    }
+
+    fn open(&self) -> SqliteStorage {
+        SqliteStorage::new(
+            self.db_path.to_str().unwrap().to_string(),
+            self.gate_keyfile.to_str().unwrap().to_string(),
+        )
+        .unwrap()
+    }
+
+    fn request(&self, storage: &SqliteStorage, key: &str, tenant: &str) -> Value {
+        let mut request = parse(&intent(&self.agent_id, key, "github.com/evil/x"));
+        request["tenant_id"] = json!(tenant);
+        request["action_type"] = json!("github.delete_repo");
+        parse(
+            &storage
+                .request_action(
+                    &request.to_string(),
+                    self.agent_keyfile.to_str().unwrap(),
+                    60,
+                )
+                .unwrap(),
+        )
+    }
+}
+
+fn assert_not_installed(result: &Value) {
+    assert_eq!(result["authorization"]["decision"], "BLOCKED");
+    assert_eq!(
+        result["authorization"]["reason_codes"],
+        json!(["POLICY_NOT_INSTALLED"])
+    );
+    assert!(result.get("policy_bundle").is_none());
+}
+
+#[test]
+fn default_deny_without_installed_policy_is_blocked_and_verifiable() {
+    let (gate, storage) = Gate::new();
+    // Registering the root and the first agent must not seed any policy.
+    assert_eq!(parse(&storage.list_policies().unwrap()), json!([]));
+    let result = gate.request(&storage, "dd-1", "acme");
+    assert_not_installed(&result);
+    let action_id = result["authorization"]["action_id"].as_str().unwrap();
+    let verification = parse(&storage.verify_trace(action_id).unwrap());
+    assert_eq!(verification["status"], "VERIFIED", "{verification}");
+}
+
+#[test]
+fn default_deny_receipt_cannot_be_flipped_to_allowed() {
+    let (gate, storage) = Gate::new();
+    let result = gate.request(&storage, "dd-forge", "acme");
+    let action_id = result["authorization"]["action_id"].as_str().unwrap();
+    let connection = Connection::open(&gate.db_path).unwrap();
+    connection
+        .execute(
+            "UPDATE action_authorizations
+             SET authorization_json = replace(replace(authorization_json,
+                 'POLICY_NOT_INSTALLED', 'POLICY_ALLOWED'), 'BLOCKED', 'ALLOWED')
+             WHERE action_id = ?1",
+            [action_id],
+        )
+        .unwrap();
+    let verification = parse(&storage.verify_trace(action_id).unwrap());
+    assert_eq!(verification["status"], "INVALID");
+}
+
+#[test]
+fn tenant_without_its_own_policy_is_blocked() {
+    let (gate, storage) = Gate::new();
+    let spec = json!({
+        "schema_version": "tempus.policy-bundle.v1",
+        "policy_version": "acme-only-v1",
+        "tenant_id": "acme",
+        "constraints": {
+            "allowed_action_types": ["github.delete_repo"],
+            "allowed_resources": ["*"],
+            "allowed_executors": ["*"],
+            "max_ttl_seconds": 60,
+            "max_input_bytes": 1024
+        }
+    });
+    storage.install_policy(&spec.to_string()).unwrap();
+    let acme = gate.request(&storage, "t-acme", "acme");
+    assert_eq!(acme["authorization"]["decision"], "ALLOWED");
+    let other = gate.request(&storage, "t-other", "other-tenant");
+    assert_not_installed(&other);
+}
+
+#[test]
+fn deleting_policies_from_the_database_and_reopening_stays_blocked() {
+    let (gate, storage) = Gate::new();
+    storage.install_allow_all_dev_policy().unwrap();
+    assert_eq!(
+        gate.request(&storage, "del-1", "acme")["authorization"]["decision"],
+        "ALLOWED"
+    );
+    drop(storage);
+    let connection = Connection::open(&gate.db_path).unwrap();
+    connection
+        .execute_batch("DELETE FROM active_policy_attestations; DELETE FROM policy_bundles;")
+        .unwrap();
+    drop(connection);
+    let reopened = gate.open();
+    assert_not_installed(&gate.request(&reopened, "del-2", "acme"));
+    let reopened_again = gate.open();
+    assert_not_installed(&gate.request(&reopened_again, "del-3", "acme"));
+}
+
+#[test]
+fn legacy_seeded_baseline_in_an_old_database_is_ignored() {
+    let (gate, storage) = Gate::new();
+    storage.install_allow_all_dev_policy().unwrap();
+    let connection = Connection::open(&gate.db_path).unwrap();
+    // Simulate a database seeded by a gate older than default-deny.
+    connection
+        .execute_batch(
+            "UPDATE policy_bundles SET policy_version = 'tempus.baseline.v1';
+             UPDATE active_policy_attestations SET policy_version = 'tempus.baseline.v1';",
+        )
+        .unwrap();
+    drop(connection);
+    assert_not_installed(&gate.request(&gate.open(), "legacy-1", "acme"));
+}
+
+#[test]
+fn allow_all_dev_policy_is_explicit_idempotent_and_replaceable_by_a_real_policy() {
+    let (gate, storage) = Gate::new();
+    let first = parse(&storage.install_allow_all_dev_policy().unwrap());
+    let second = parse(&storage.install_allow_all_dev_policy().unwrap());
+    assert_eq!(first["policy_digest"], second["policy_digest"]);
+    assert!(first["policy_version"]
+        .as_str()
+        .unwrap()
+        .starts_with("tempus.dev-allow-all.v1"));
+    let allowed = gate.request(&storage, "dev-1", "acme");
+    assert_eq!(allowed["authorization"]["decision"], "ALLOWED");
+    assert_eq!(
+        parse(
+            &storage
+                .verify_trace(allowed["authorization"]["action_id"].as_str().unwrap())
+                .unwrap()
+        )["phase"],
+        "AUTHORIZED"
+    );
+    // A real wildcard policy is never silently replaced by the dev opt-in.
+    let spec = json!({
+        "schema_version": "tempus.policy-bundle.v1",
+        "policy_version": "real-wildcard-v1",
+        "tenant_id": "*",
+        "constraints": {
+            "allowed_action_types": ["purchase"],
+            "allowed_resources": ["vendor/*"],
+            "allowed_executors": ["*"],
+            "max_ttl_seconds": 60,
+            "max_input_bytes": 1024
+        }
+    });
+    storage.install_policy(&spec.to_string()).unwrap();
+    assert!(storage
+        .install_allow_all_dev_policy()
+        .unwrap_err()
+        .contains("TEMPUS_DEV_ALLOW_ALL_REFUSED"));
+}
+
 #[test]
 fn test_copy_pyd_binary() {
     let candidates = [
@@ -679,4 +877,32 @@ fn test_copy_pyd_binary() {
             break;
         }
     }
+}
+
+#[test]
+fn numbers_that_overflow_f64_are_non_exact_numbers_not_syntax_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    let gate_keyfile = temp.path().join("gate.keys.json");
+    generate_keypair(gate_keyfile.to_str().unwrap()).unwrap();
+    let gate_id = public_key(&gate_keyfile);
+    let storage = SqliteStorage::new(
+        temp.path().join("tempus.db").to_str().unwrap().to_string(),
+        gate_keyfile.to_str().unwrap().to_string(),
+    )
+    .unwrap();
+
+    for raw in [r#"{"a":1e400}"#, r#"{"a":-1e400}"#, r#"{"a":[1e999]}"#] {
+        let policy = storage.install_policy(raw).unwrap_err();
+        assert!(policy.starts_with("NON_EXACT_NUMBER"), "{raw}: {policy}");
+        let metadata = storage
+            .register_agent(&gate_id, "tempus-gate", raw)
+            .unwrap_err();
+        assert!(
+            metadata.starts_with("NON_EXACT_NUMBER"),
+            "{raw}: {metadata}"
+        );
+    }
+    // Real syntax errors keep their message.
+    let syntax = storage.install_policy("{not json").unwrap_err();
+    assert!(syntax.contains("must be valid JSON"), "{syntax}");
 }

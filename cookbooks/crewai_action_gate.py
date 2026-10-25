@@ -49,6 +49,7 @@ def run_crewai_tempus_demo():
         # 1. Register agents
         tenant_id = "enterprise-fintech"
         gate.register_agent(gate_id, "gate-root", '{"can_delegate":true}')
+        gate.install_allow_all_dev_policy()  # demo only: explicit allow-all (default is deny-all)
         gate.register_agent(analyst_id, "crew-analyst-agent", '{"role":"proposer"}')
         gate.register_agent(executor_id, "crew-financial-executor", '{"role":"executor"}')
 

@@ -3,7 +3,7 @@ import time
 
 import pytest
 import tempus_ddb.mcp_server as mcp_module
-from tempus_ddb import TempusExecutor
+from tempus_ddb import TempusDDB, TempusExecutor
 from tempus_ddb.mcp_server import call_tool, list_tools, validate_path
 
 
@@ -66,6 +66,10 @@ async def test_mcp_b2a_workflow(sandbox, monkeypatch):
         assert json.loads(response[0].text)["status"] == "success"
     response = await call_tool("tempus_init", {"db": "test.db"})
     assert json.loads(response[0].text)["status"] == "success"
+    # Default is deny-all; the operator (not the agent) opts into allow-all for the test.
+    TempusDDB(
+        str(sandbox / "test.db"), str(sandbox / "keys.json")
+    ).install_allow_all_dev_policy()
 
     agent_id = json.loads((sandbox / "agent.keys.json").read_text())["public_key"]
     executor_id = json.loads((sandbox / "executor.keys.json").read_text())["public_key"]

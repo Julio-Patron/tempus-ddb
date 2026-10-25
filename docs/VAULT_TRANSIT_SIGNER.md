@@ -28,7 +28,7 @@ tempus --keyfile vault.signer.json --db tempus.db doctor --json
 
 Each signing call has a bounded timeout and one to three attempts. A timeout, CLI error,
 unexpected key version, malformed response, or signature that does not verify against the
-configured public key fails closed. Tempus passes only the non-secret message digest or
+configured public key aborts the operation: no receipt is issued. Tempus passes only the non-secret message digest or
 canonical receipt bytes to the CLI and does not print the Vault credential.
 
 Vault's audit device should be enabled before production use. Correlate its signing path

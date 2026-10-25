@@ -56,7 +56,7 @@ root and inspect history, but agents, the gate, and executors perform the runtim
 - Every action uses `tempus.action-intent.v1`.
 - `agent_id` must match the Ed25519 key that signs the canonical intent.
 - Unknown or untrusted agents receive a signed `BLOCKED` authorization.
-- Invalid schema, mismatched identity, and malformed JSON fail closed.
+- Invalid schema, mismatched identity, and malformed JSON are rejected; no permit is issued for them.
 
 ### Permit integrity and replay protection
 

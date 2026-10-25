@@ -1,15 +1,17 @@
 [package]
 name = "tempus-ddb"
 version = "0.5.3"
-description = "Local-first B2A security gate with tamper-evident execution receipts"
+description = "Fail-closed policy gate for AI agent actions: signed policies, single-use permits, receipts"
 license = "MIT"
 repository = "https://github.com/Julio-Patron/tempus-ddb"
 homepage = "https://julio-patron.github.io/tempus-ddb/"
+documentation = "https://julio-patron.github.io/tempus-ddb/docs.html"
 authors = ["Tempus DDB Contributors"]
 readme = "README.md"
-keywords = ["ai", "agents", "ledger", "audit", "mcp"]
-categories = ["command-line-utilities", "database"]
+keywords = ["ai-agents", "mcp", "policy", "security", "audit"]
+categories = ["cryptography", "authentication", "command-line-utilities"]
 edition = "2021"
+rust-version = "1.88"
 
 [lib]
 name = "_tempus_ddb"

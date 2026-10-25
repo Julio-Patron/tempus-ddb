@@ -14,7 +14,7 @@ experience, and one production-grade executor path comes before a broad adapter 
 - Separate gate, requesting-agent, and executor Ed25519 identities.
 - Signed deterministic policies with reproducible evidence and closed reason codes.
 - Tenant-scoped delegation, rotation, revocation, and historical key resolution.
-- Single-use expiring permits and fail-closed executor recovery.
+- Single-use expiring permits; an executor that cannot tell whether an effect happened records the outcome as unknown instead of retrying.
 - Local and Vault Transit signing through the same provider boundary.
 - A GitHub executor for exactly bound issue and pull-request creation.
 - Autonomous MCP tools, adapter conformance fixtures, SBOM generation, and release
@@ -57,7 +57,7 @@ single-consumption or historical verification guarantees.
 
 - No permit, no effect; every effect produces a verifiable receipt.
 - Humans inspect history but do not sit in the autonomous transaction loop.
-- Unknown schemas, policies, identities, and execution states fail closed.
+- Unknown schemas, policies, identities, and execution states are rejected or denied, never treated as allowed. With no installed policy the gate denies every action (default-deny) and signs the denial.
 - Credentials belong to mediated executors, never to requesting agents.
 - Performance, availability, and compliance statements require reproducible evidence.
 

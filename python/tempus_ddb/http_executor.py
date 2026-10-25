@@ -1,12 +1,17 @@
 """Credential-isolated HTTP/Webhook executor for Tempus permits."""
 
-import ipaddress
 import json
 import os
 from typing import Any, Dict, Optional, Protocol, Set
 from urllib import error, parse, request
 
 from . import __version__
+from ._http import (
+    DestinationRefused,
+    RedirectRefused,
+    check_host_literal,
+    open_request,
+)
 from .executor_runtime import (
     AmbiguousTransportError,
     ExecutionResult,
@@ -26,34 +31,72 @@ class HttpAPIError(HttpExecutorError):
         self.status_code = status_code
 
 
+def _reject_dot_segments(path: str) -> None:
+    """Refuse `.` and `..` path segments, however they are spelled.
+
+    The policy matches the text (`https://api.example.com/v1/*`) but the server resolves
+    `/v1/../admin` or `/v1/%2e%2e/admin` to another path. The path is percent-decoded
+    until it stops changing (so `%252e%252e` is caught too), then split on `/`; a
+    backslash (some servers treat it as `/`) or an `;param` after the dots does not hide
+    a segment either.
+    """
+    decoded = path
+    for _ in range(5):
+        again = parse.unquote(decoded)
+        if again == decoded:
+            break
+        decoded = again
+    else:
+        raise HttpExecutorError("Target URL path is encoded too many times")
+    if "\\" in decoded:
+        raise HttpExecutorError("Target URL path must not contain backslashes")
+    for segment in decoded.split("/"):
+        if segment.split(";", 1)[0] in {".", ".."}:
+            raise HttpExecutorError("Target URL path must not contain '.' or '..' segments")
+
+
 def _validate_https_url(
     target_url: str, allowed_domains: Optional[Set[str]] = None
 ) -> str:
-    candidate = target_url.strip()
+    # The URL that is validated must be byte for byte the URL that is requested (and the
+    # string the policy matched): urlsplit drops tabs and newlines and `.strip()` removes
+    # padding, which urllib keeps, so anything they would disagree on is refused.
+    if not isinstance(target_url, str) or any(
+        char.isspace() or char == "\\" or ord(char) < 0x20 or ord(char) == 0x7F
+        for char in target_url
+    ):
+        raise HttpExecutorError(
+            "Target URL must not contain whitespace, control characters or backslashes"
+        )
+    candidate = target_url
     parsed = parse.urlsplit(candidate)
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or "@" in parsed.netloc
+    ):
+        raise HttpExecutorError("Target URL must not contain credentials")
     if parsed.scheme != "https" or not parsed.netloc:
         raise HttpExecutorError("Target URL must be a valid HTTPS endpoint")
+
+    _reject_dot_segments(parsed.path)
 
     hostname = (parsed.hostname or "").lower()
     if not hostname:
         raise HttpExecutorError("Target URL must contain a valid hostname")
 
-    # SSRF protection: reject localhost and private IP networks
-    if hostname in {"localhost", "localhost.localdomain"}:
-        raise HttpExecutorError("Target URL host cannot be localhost")
-
+    # SSRF filter (see _http.py): names/IP spellings that are refused without any lookup.
+    # Resolution is checked again, and pinned, when the connection is made.
+    if "%" in hostname:
+        raise HttpExecutorError("Target URL host must not contain percent escapes")
     try:
-        ip = ipaddress.ip_address(hostname)
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-        ):
-            raise HttpExecutorError(f"Target URL resolves to disallowed IP: {ip}")
+        parsed.port
     except ValueError:
-        pass
+        raise HttpExecutorError("Target URL has an invalid port") from None
+    try:
+        check_host_literal(hostname)
+    except DestinationRefused as exc:
+        raise HttpExecutorError(f"Target URL destination refused: {exc}") from exc
 
     if allowed_domains is not None:
         matched = any(
@@ -96,7 +139,7 @@ class UrllibHttpTransport:
         )
         req = request.Request(url, data=data, headers=headers, method=method)
         try:
-            with request.urlopen(req, timeout=30) as response:  # nosec B310
+            with open_request(req, timeout=30, pinned=True) as response:  # nosec B310
                 raw = response.read().decode("utf-8")
                 try:
                     return (
@@ -106,6 +149,10 @@ class UrllibHttpTransport:
                     )
                 except json.JSONDecodeError:
                     return {"body": raw, "http_status": response.status}
+        except RedirectRefused as exc:
+            raise HttpAPIError(exc.status_code, str(exc)) from exc
+        except DestinationRefused as exc:
+            raise HttpExecutorError(f"Target URL destination refused: {exc}") from exc
         except error.HTTPError as exc:
             err_body = exc.read().decode("utf-8", errors="replace")
             raise HttpAPIError(exc.code, f"HTTP {exc.code}: {err_body}") from exc
@@ -136,6 +183,15 @@ class HttpActionAdapter:
             }
         else:
             self._allowed_domains = None
+        if self._auth_header and not self._allowed_domains:
+            # Fail closed: the header is added to every request, so without an allowlist a
+            # policy pattern that is too wide (`https://host*`) sends the secret anywhere.
+            raise HttpExecutorError(
+                "Refusing to start: an Authorization header is configured without a "
+                "domain allowlist (allowed_domains / --allowed-domains / "
+                "HTTP_EXECUTOR_ALLOWED_DOMAINS). Name the hosts that may receive the "
+                "secret, or pass '*' to accept every host explicitly."
+            )
         self._transport = transport or UrllibHttpTransport(
             allowed_domains=self._allowed_domains
         )
@@ -146,8 +202,7 @@ class HttpActionAdapter:
 
     def execute_action(self, intent: Dict[str, Any]) -> ExecutionResult:
         action_type = intent.get("action_type")
-        target_url = intent.get("resource")
-        _validate_https_url(target_url, self._allowed_domains)
+        target_url = _validate_https_url(intent.get("resource"), self._allowed_domains)
 
         input_data = intent.get("input", {})
         method = "PUT" if action_type == "http.put" else "POST"

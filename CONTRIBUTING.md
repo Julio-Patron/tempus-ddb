@@ -45,8 +45,8 @@ credentials, logs, caches, wheels, or build output.
 
 ## Security and compatibility expectations
 
-- Preserve fail-closed behavior for unknown schema, policy, identity, signer, and
-  execution states.
+- Keep unknown schema, policy, identity, signer, and execution states rejected or
+  denied (never allowed), and keep the gate default-deny.
 - Add an adversarial regression test for changes to replay prevention, signature
   verification, policy evaluation, credential isolation, or recovery.
 - Treat signed JSON fields and machine status values as public contracts. Follow

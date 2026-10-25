@@ -110,6 +110,13 @@ enum Commands {
         #[arg(long, default_value = "60")]
         ttl_seconds: u64,
     },
+    /// DEVELOPMENT ONLY: explicitly install a signed allow-all policy
+    InstallAllowAllDev {
+        #[arg(long, default_value = "tempus.db")]
+        db: String,
+        #[arg(long, default_value = "gate.keys.json")]
+        gate_keyfile: String,
+    },
     /// Commit the executor outcome for an allowed action
     CommitOutcome {
         #[arg(long, default_value = "tempus.db")]
@@ -141,6 +148,49 @@ enum Commands {
         gate_keyfile: String,
         #[arg(long)]
         action_id: String,
+        /// Gate public key (64 hex chars) pinned by the verifier. Without it the
+        /// result is marked "independent": false (trust root taken from the DB).
+        #[arg(long)]
+        gate_public_key: Option<String>,
+        /// Optional executor public key(s) to pin (requires --gate-public-key)
+        #[arg(long = "executor-public-key")]
+        executor_public_keys: Vec<String>,
+    },
+    /// Export one action as a self-contained evidence bundle (no private keys)
+    ExportBundle {
+        #[arg(long, default_value = "tempus.db")]
+        db: String,
+        #[arg(long, default_value = "gate.keys.json")]
+        gate_keyfile: String,
+        #[arg(long)]
+        action_id: String,
+        /// Output file for the bundle JSON
+        #[arg(long)]
+        out: String,
+    },
+    /// Verify an evidence bundle without a database, against a pinned gate key
+    VerifyBundle {
+        /// Path to the bundle JSON
+        #[arg(long)]
+        bundle: String,
+        /// Gate public key (64 hex chars) pinned by the verifier
+        #[arg(long)]
+        gate_public_key: String,
+        /// Optional executor public key(s) to pin
+        #[arg(long = "executor-public-key")]
+        executor_public_keys: Vec<String>,
+    },
+    /// Verify a standalone receipt (trace, permit or outcome JSON) without a database
+    VerifyReceipt {
+        /// Path to the receipt JSON
+        #[arg(long)]
+        receipt: String,
+        /// Gate public key (64 hex chars) pinned by the verifier
+        #[arg(long)]
+        gate_public_key: String,
+        /// Optional executor public key(s) to pin
+        #[arg(long = "executor-public-key")]
+        executor_public_keys: Vec<String>,
     },
 }
 
@@ -345,6 +395,28 @@ fn main() {
                 }
             }
         }
+        Commands::InstallAllowAllDev { db, gate_keyfile } => {
+            let storage = match _tempus_ddb::SqliteStorage::new(db, gate_keyfile) {
+                Ok(storage) => storage,
+                Err(error) => {
+                    eprintln!("Error opening gate: {error}");
+                    std::process::exit(1);
+                }
+            };
+            match storage.install_allow_all_dev_policy() {
+                Ok(json) => {
+                    eprintln!(
+                        "WARNING: allow-all development policy installed; every action is \
+                         ALLOWED. Do not use in production."
+                    );
+                    println!("{json}");
+                }
+                Err(error) => {
+                    eprintln!("Error installing allow-all dev policy: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Commands::CommitOutcome {
             db,
             gate_keyfile,
@@ -391,6 +463,8 @@ fn main() {
             db,
             gate_keyfile,
             action_id,
+            gate_public_key,
+            executor_public_keys,
         } => {
             let storage = match _tempus_ddb::SqliteStorage::new(db, gate_keyfile) {
                 Ok(storage) => storage,
@@ -399,18 +473,98 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            match storage.verify_trace(&action_id) {
-                Ok(json) => {
-                    println!("{json}");
-                    if json.contains("\"status\":\"INVALID\"") {
-                        std::process::exit(2);
+            let result = match gate_public_key {
+                Some(gate) => storage.verify_trace_pinned(&action_id, &gate, &executor_public_keys),
+                None if !executor_public_keys.is_empty() => {
+                    Err("--executor-public-key requires --gate-public-key".to_string())
+                }
+                None => {
+                    eprintln!(
+                        "WARNING: no --gate-public-key: NOT INDEPENDENT (trust root comes from \
+                         the database being verified)"
+                    );
+                    storage.verify_trace(&action_id)
+                }
+            };
+            print_verification(result);
+        }
+        Commands::ExportBundle {
+            db,
+            gate_keyfile,
+            action_id,
+            out,
+        } => {
+            let storage = match _tempus_ddb::SqliteStorage::new(db, gate_keyfile) {
+                Ok(storage) => storage,
+                Err(error) => {
+                    eprintln!("Error opening gate: {error}");
+                    std::process::exit(1);
+                }
+            };
+            match storage.export_bundle(&action_id, None) {
+                Ok(bundle) => {
+                    if let Err(error) = std::fs::write(&out, &bundle) {
+                        eprintln!("Error writing bundle '{out}': {error}");
+                        std::process::exit(1);
                     }
+                    eprintln!("Bundle written to {out}");
                 }
                 Err(error) => {
-                    eprintln!("Error verifying trace: {error}");
+                    eprintln!("Error exporting bundle: {error}");
                     std::process::exit(1);
                 }
             }
+        }
+        Commands::VerifyBundle {
+            bundle,
+            gate_public_key,
+            executor_public_keys,
+        } => {
+            let raw = match std::fs::read_to_string(&bundle) {
+                Ok(raw) => raw,
+                Err(error) => {
+                    eprintln!("Error reading bundle '{bundle}': {error}");
+                    std::process::exit(1);
+                }
+            };
+            print_verification(_tempus_ddb::verify_bundle(
+                &raw,
+                &gate_public_key,
+                &executor_public_keys,
+            ));
+        }
+        Commands::VerifyReceipt {
+            receipt,
+            gate_public_key,
+            executor_public_keys,
+        } => {
+            let raw = match std::fs::read_to_string(&receipt) {
+                Ok(raw) => raw,
+                Err(error) => {
+                    eprintln!("Error reading receipt '{receipt}': {error}");
+                    std::process::exit(1);
+                }
+            };
+            print_verification(_tempus_ddb::verify_receipt(
+                &raw,
+                &gate_public_key,
+                &executor_public_keys,
+            ));
+        }
+    }
+}
+
+fn print_verification(result: Result<String, String>) {
+    match result {
+        Ok(json) => {
+            println!("{json}");
+            if json.contains("\"status\":\"INVALID\"") {
+                std::process::exit(2);
+            }
+        }
+        Err(error) => {
+            eprintln!("Error verifying: {error}");
+            std::process::exit(1);
         }
     }
 }
