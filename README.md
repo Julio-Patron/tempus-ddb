@@ -570,17 +570,15 @@ tempus-http-executor \
 - **Credentials need an allowlist.** The `Authorization` header is added to every request,
   so the executor refuses to start with `--auth-header` (or `HTTP_EXECUTOR_AUTH_HEADER`)
   unless `--allowed-domains` / `allowed_domains` / `HTTP_EXECUTOR_ALLOWED_DOMAINS` names the
-  hosts that may receive it (`*` accepts every host, explicitly). An entry matches that host
-  only, or, when written `*.example.com`, one or more labels under that domain
-  (`a.example.com`, `a.b.example.com`; not the apex `example.com`, not `evilexample.com`,
-  not `example.com.evil.com`). `example.com` does not include its subdomains. `host*` matches
-  nothing.
+  hosts that may receive it (`*` accepts every host, explicitly). Pattern matching now
+  respects component boundaries: an entry matches that host only, and `*.domain` matches
+  labels under that domain but not the apex. An exact host does not include its subdomains.
+  A `*` glued to text matches nothing.
 - **Policy patterns match whole components.** `allowed_resources`, `allowed_action_types`,
   `allowed_executors`, `allowed_currencies` and `allowed_beneficiaries` split on `/` and `.`.
-  A `*` matches only as a whole component: `https://api.example.com/*` matches
-  `https://api.example.com/v1/users` (and deeper paths); `acme/*` matches `acme/repo`;
-  `*.example.com` matches a subdomain. `https://api.example.com*`, `host*` and `/api*` match
-  nothing (the `*` is glued to the text), and `/api/*` does not match `/apifoo`.
+  A `*` matches only as a whole component, so a path pattern such as `https://api.example.com/*`
+  or `acme/*` covers what follows that separator, and `*.domain` covers labels under that
+  domain. A `*` glued to the surrounding text matches nothing.
   `tempus install-policy` prints a WARNING for `http(s)` patterns with no `/` before the `*`.
 - **Ports are not restricted by the allowlist** (`:8443` on an allowed host is still allowed).
   A policy pattern matches the URL text, so a pattern without the port does not match a URL
@@ -659,7 +657,8 @@ tempus-payment-executor \
   exception (or `AmbiguousTransportError`) when it cannot tell whether the payout
   happened.
 - **This executor is not a complete payment control.** It checks, per intent, the currency,
-  the beneficiary pattern and one maximum amount, with textual patterns; it has no
+  the beneficiary pattern and one maximum amount, with the same component patterns as the
+  policy; it has no
   cumulative, daily or velocity limits, no sanctions/KYC checks, no confirmation of the
   provider's settlement, and the shipped transport is a mock. Put the real controls
   (provider-side limits, approvals, reconciliation) at the provider.
@@ -891,6 +890,15 @@ for earlier versions can hit `NON_EXACT_NUMBER` (the message names the path, for
 | A float in `input` (`{"price": 19.99}`) | `NON_EXACT_NUMBER ... $.input.price` (it used to produce a signed `BLOCKED`) | A string (`"19.99"`) or an integer in minor units (`1999`) |
 | A decimal in agent `metadata`, a policy or an outcome `output` | `NON_EXACT_NUMBER` at its path | A string (`"0.5"`); policy limits such as `max_money_amount_minor` are already integers |
 | `NaN`, `Infinity`, `1e400` or `-0` from the CLI (`--intent`, `--outcome`, `--policy`, `--metadata`) | `NON_EXACT_NUMBER` (raw text given to the Python/Rust API: `1e400` is `NON_EXACT_NUMBER`; `NaN`/`Infinity` are "must be valid JSON", they are not JSON) | Send a string, or write `0` for `-0` |
+
+Pattern matching now respects component boundaries (`.` and `/`). A `*` matches only as
+a whole component. These are denials, not new allows:
+
+| What you had | Result | Fix |
+| --- | --- | --- |
+| A policy pattern whose `*` is glued to the surrounding text (a textual prefix) in `allowed_resources`, `allowed_action_types`, `allowed_executors`, `allowed_currencies`, or `allowed_beneficiaries` | The pattern matches nothing, so that entry authorizes nobody | Put `*` in its own component, after `.` or `/` (`name/*`, `*.domain`), or list the exact value. `*` alone still matches everything |
+| An HTTP allowlist entry that was meant to include subdomains (`example.com` used to allow labels under it) | Only that exact host matches | Add `*.domain` for the labels under it, and keep the apex as its own entry if it should still match. `*` still means every host |
+| A payment allowlist entry (`allowed_beneficiaries` or `PAYMENT_ALLOWED_BENEFICIARIES`) that used `*` as a textual prefix | The entry authorizes nobody. The policy field of the same name uses the same rule | An exact beneficiary, `*`, or a `*` that is its own component |
 
 Custom executors do not need to convert their results: the packaged runtime records floats,
 huge integers, `Decimal` and `datetime` as strings, and a result it cannot represent in a

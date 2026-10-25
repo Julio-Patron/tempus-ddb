@@ -131,6 +131,82 @@ def canonical_money(money: Dict[str, Any]) -> Tuple[str, str]:
     return f"{minor // 100}.{minor % 100:02d}", asset
 
 
+def component_pattern_matches(pattern: str, candidate: str) -> bool:
+    """Whether ``pattern`` matches ``candidate`` the way the policy does.
+
+    The same component rules as ``phase3::pattern_matches``: ``*`` matches only
+    as a whole component split on ``.`` and ``/``. A ``*`` glued to text matches
+    nothing, so a pattern that no longer applies authorizes nobody.
+    """
+    if pattern == "*" or pattern == candidate:
+        return True
+    pattern_pieces = _component_pieces(pattern, wildcards=True)
+    candidate_pieces = _component_pieces(candidate, wildcards=False)
+    if pattern_pieces is None or candidate_pieces is None:
+        return False
+    return _pieces_match(pattern_pieces, candidate_pieces)
+
+
+def _component_pieces(value: str, wildcards: bool):
+    pieces = []
+    start = 0
+    for index, char in enumerate(value):
+        if char in "./":
+            if start < index and not _push_piece(pieces, value[start:index], wildcards):
+                return None
+            pieces.append(("sep", char))
+            start = index + 1
+    if start < len(value) and not _push_piece(pieces, value[start:], wildcards):
+        return None
+    return pieces
+
+
+def _push_piece(pieces, text: str, wildcards: bool) -> bool:
+    if wildcards and "*" in text:
+        if text != "*":
+            return False
+        pieces.append(("wild",))
+    else:
+        pieces.append(("text", text))
+    return True
+
+
+def _pieces_match(pattern, candidate) -> bool:
+    if not pattern:
+        return not candidate
+    head, rest = pattern[0], pattern[1:]
+    kind = head[0]
+    if kind == "wild":
+        return _wildcard_matches(rest, candidate)
+    if kind == "sep":
+        return bool(candidate) and candidate[0] == head and _pieces_match(rest, candidate[1:])
+    if kind == "text":
+        return bool(candidate) and candidate[0] == head and _pieces_match(rest, candidate[1:])
+    return False
+
+
+def _wildcard_matches(rest, candidate) -> bool:
+    if not rest:
+        return bool(candidate)
+    bound = rest[0][1] if rest[0][0] == "sep" else None
+    index = 0
+    texts = 0
+    while index < len(candidate):
+        kind = candidate[index][0]
+        if kind == "text":
+            texts += 1
+            index += 1
+            if _pieces_match(rest, candidate[index:]):
+                return True
+        elif kind == "sep":
+            if texts == 0 or bound != candidate[index][1]:
+                return False
+            index += 1
+        else:
+            return False
+    return False
+
+
 class PaymentActionAdapter:
     """ActionAdapter implementation for financial disbursements and transfers."""
 
@@ -184,10 +260,9 @@ class PaymentActionAdapter:
         if self._allowed_beneficiaries is not None:
             # Compare the value the transport will receive, as written: no strip or
             # case-folding that would let "ALICE " pass for "alice" and then be paid as is.
+            # Wildcards are the policy's component rules, not a textual prefix.
             allowed = any(
-                beneficiary == ab
-                or (ab.endswith("*") and beneficiary.startswith(ab[:-1]))
-                or ab == "*"
+                component_pattern_matches(ab, beneficiary)
                 for ab in self._allowed_beneficiaries
             )
             if not allowed:

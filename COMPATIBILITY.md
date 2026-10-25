@@ -22,9 +22,11 @@ than its convenience APIs because authorization receipts may outlive a deploymen
   in `CHANGELOG.md` with its replacement.
 - Security-sensitive behavior may become stricter in a patch release. Such changes are
   called out explicitly and never turn a blocked action into an allowed action.
-- Policy pattern lists match on component boundaries (`.` and `/`). A `*` that is not
-  a whole component matches nothing. The HTTP domain allowlist is an exact host, `*`,
-  or `*.domain` (an exact host does not include its subdomains). See `CHANGELOG.md`.
+- Pattern matching now respects component boundaries (`.` and `/`). A `*` that is not
+  a whole component matches nothing. That applies to every policy pattern list and to
+  the payment beneficiary allowlist. The HTTP domain allowlist is an exact host, `*`,
+  or `*.domain` (an exact host does not include its subdomains). See `CHANGELOG.md`
+  and the README section "Common cases that now break, and how to fix them".
 
 ## Stored data
 

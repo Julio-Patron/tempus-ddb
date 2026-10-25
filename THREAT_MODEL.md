@@ -66,8 +66,9 @@ root and inspect history, but agents, the gate, and executors perform the runtim
 - Repeating the same request returns the original authorization.
 - Reusing an idempotency key for a different intent is rejected.
 - Permit TTL is bounded to 1–86,400 seconds.
-- Policy patterns (`allowed_resources` and the other pattern lists) match whole
-  components split on `.` and `/`. A `*` glued to text matches nothing.
+- Pattern matching now respects component boundaries (`.` and `/`) for policy pattern
+  lists and the payment beneficiary allowlist. A `*` that is not a whole component
+  matches nothing.
 
 ### Outcome integrity and single consumption
 

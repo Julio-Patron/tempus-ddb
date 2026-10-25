@@ -104,8 +104,9 @@ def test_payment_allowlist_compares_the_value_the_transport_receives(beneficiary
     assert recorder.calls == []
 
 
-def test_payment_allowlist_still_accepts_the_exact_value_and_prefix_patterns():
-    for allowed, beneficiary in (({"alice"}, "alice"), ({"vendor-*"}, "vendor-42")):
+def test_payment_allowlist_matches_exact_values_and_component_wildcards():
+    accepted = (({"alice"}, "alice"), ({"vendor/*"}, "vendor/42"), ({"*"}, "vendor-42"))
+    for allowed, beneficiary in accepted:
         recorder = Recorder()
         adapter = PaymentActionAdapter(
             transport=recorder, allowed_beneficiaries=allowed
@@ -118,3 +119,16 @@ def test_payment_allowlist_still_accepts_the_exact_value_and_prefix_patterns():
         )
         assert result.status == "SUCCEEDED"
         assert recorder.calls[0][3] == beneficiary
+
+    recorder = Recorder()
+    adapter = PaymentActionAdapter(
+        transport=recorder, allowed_beneficiaries={"vendor-*"}
+    )
+    with pytest.raises(PaymentExecutorError):
+        adapter.execute_action(
+            {
+                "action_type": "payment.charge",
+                "money": {"amount": "1.00", "asset": "USD", "beneficiary": "vendor-42"},
+            }
+        )
+    assert recorder.calls == []

@@ -2,40 +2,35 @@
 
 ## [Unreleased]
 
-### Security: policy patterns and the HTTP allowlist match on component boundaries
+### Security: pattern matching now respects component boundaries
 
-`matches_patterns` treated a trailing `*` as a textual prefix, so
-`https://api.example.com*` also matched `https://api.example.com.evil.com/...` and
-`/api*` matched `/apifoo`. A `*` is now a whole component. `.` and `/` are the
-boundaries:
+Policy patterns and the executor allowlists that mirror them used to treat a trailing
+`*` as a textual prefix. A `*` is now a whole component. `.` and `/` are the
+boundaries. This only turns a previous match into a denial.
 
 - `*` alone still matches everything. An exact string still matches only itself.
-- `*.example.com` matches a subdomain (`a.example.com`, `a.b.example.com`) and does
-  not match `example.com`, `evilexample.com`, or `example.com.evil.com`.
-- A trailing `*` after `/` or `.` matches one or more following components
-  (`https://api.example.com/*`, `acme/*`, `/api/*`, `http.*`).
-- A `*` glued to text (`host*`, `/api*`, `https://api.example.com*`, `vendor-*`,
-  `USD*`) matches nothing. The pattern denies; it does not widen to a neighbor.
+- A `*` after `.` or `/` matches one or more following components, including a leading
+  `*.` label. It does not match the apex name and it does not match a name that merely
+  contains the same text.
+- A `*` glued to text matches nothing. The pattern denies; it does not widen.
 
 The same rules apply to every policy pattern list (`allowed_resources`,
 `allowed_action_types`, `allowed_executors`, `allowed_currencies`,
-`allowed_beneficiaries`).
+`allowed_beneficiaries`) and to the payment executor's own beneficiary allowlist
+(`allowed_beneficiaries` / `PAYMENT_ALLOWED_BENEFICIARIES`). A pattern that is no
+longer a component wildcard authorizes nobody on both sides.
 
 The HTTP executor domain allowlist no longer treats an entry as "this host and any
-subdomain". An entry matches that host only; `*` matches every host; `*.example.com`
-matches subdomains of `example.com` but not the apex and not a name that merely
-contains that text. `host*` matches nothing.
+subdomain". An entry matches that host only; `*` matches every host; `*.domain`
+matches labels under that domain and not the apex. A glued star matches nothing.
 
-`tempus install-policy` still warns on `http(s)://...*` with no `/` before the star.
+`tempus install-policy` still warns on `http(s)` patterns with no `/` before the star.
 That form is now inert (it authorizes nothing) rather than a prefix, except a star
-that is the whole host (`https://*`), which matches every URL of that scheme.
+that is the whole host, which matches every URL of that scheme.
 
-The payment executor's own beneficiary allowlist is unchanged and still uses a
-textual prefix (`vendor-*` matches `vendor-42`). A policy `allowed_beneficiaries`
-entry uses the component rules, so `vendor-*` in a policy matches nothing.
-
-This only turns a previous match into a denial. It is independent of the
-transport-outcome classification and can ship on its own (0.5.4).
+Migration notes are in the README section "Common cases that now break, and how to
+fix them". This change is independent of the transport-outcome classification and can
+ship on its own (0.5.4).
 
 ### Security: ambiguous transport outcomes are classified by exception type
 
@@ -127,10 +122,10 @@ own (0.5.5).
   `money.amount is too large`. The parity test also covers these spellings.
 
 ### Security: the HTTP executor fails closed (forge 5)
-- **H1: credentials without an allowlist.** A policy prefix written without the slash after
-  the host (`https://api.example.com*`) also matches `https://api.example.com.evil.net/`, and
-  an executor with an `Authorization` header but no `allowed_domains` connected there and sent
-  the secret; the README example of `tempus-http-executor` was exactly that configuration.
+- **H1: credentials without an allowlist.** A policy pattern written as a textual prefix
+  also matched neighboring hosts, and an executor with an `Authorization` header but no
+  `allowed_domains` connected there and sent the secret; the README example of
+  `tempus-http-executor` was exactly that configuration.
   Now `HttpActionAdapter` (and therefore `tempus-http-executor`) refuses to start, with a
   clear message and no traceback, when an auth header (argument, `--auth-header` or
   `HTTP_EXECUTOR_AUTH_HEADER`) has no non-empty domain allowlist; `*` is the explicit way to
@@ -183,16 +178,18 @@ policy on the permit's intent before consuming it, and read the same intent text
 - Fixed, payment executor: its beneficiary allowlist compared a stripped, lower-cased value
   while the transport received the original (`"ALICE "` passed for `"alice"`). It now
   compares the value as written. **Behaviour change:** `allowed_beneficiaries` /
-  `PAYMENT_ALLOWED_BENEFICIARIES` are case-sensitive and exact (prefix `*` patterns kept).
+  `PAYMENT_ALLOWED_BENEFICIARIES` are case-sensitive and compare the value as written.
+  Wildcards on that allowlist follow the same component rules as the policy (see the
+  unreleased note above): a `*` that is not its own component authorizes nobody.
 - Checked, no mismatch: `action_type` (policy, runtime support check, HTTP method and
   GitHub endpoint use the same string), `resource` for Slack (channel) and GitHub, the
   permit's `intent` (Rust and Python read the same text; the executor re-evaluates the
   policy on it), `money.beneficiary` (policy and executor read the same field).
 - Not evaluated by the policy by design, so not a mismatch but worth knowing: the contents
   of `input` (message text, issue title, PR `head`/`base`, HTTP body). Constrain them in the
-  executor or by `action_type`/`resource`. `allowed_resources` patterns are textual: use
-  `https://api.example.com/*` (with the slash), not `https://api.example.com*`, which also
-  matches `https://api.example.com.evil.net/`.
+  executor or by `action_type`/`resource`. `allowed_resources` patterns were textual
+  prefixes. Pattern matching now respects component boundaries; write `*` as its own
+  component.
 
 ### Security: verifier hardening (independent forge findings)
 - **Duplicate JSON keys are INVALID.** `serde_json` kept the last value of a repeated key
