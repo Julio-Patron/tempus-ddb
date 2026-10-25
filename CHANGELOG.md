@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- The release workflow now generates CycloneDX SBOMs for the Rust crate
+  (`cargo-cyclonedx` 0.5.9) and the Python package (`cyclonedx-bom` 7.5.0),
+  uploads them next to the existing SPDX SBOM, and attests all three.
+- [docs/RELEASING.md](docs/RELEASING.md) describes the tag-triggered release and
+  how to verify artifacts with `gh attestation verify`.
+
+### Changed
+- A `v*` tag push is the publish trigger. The workflow creates the GitHub
+  Release and no longer runs a second time on `release: published`.
+- PyPI and crates.io publication both wait on the protected `release`
+  environment. Required reviewers are configured on that environment.
+- crates.io publication uses Trusted Publishing (OIDC). A missing token or a
+  version mismatch no longer skips the crate silently.
+- `dtolnay/rust-toolchain` is pinned to a commit. `id-token: write` is granted
+  only to the jobs that attest or publish.
+
 ## [0.5.3] - 2026-09-26
 
 First published build of the 0.5.2 security line. The `v0.5.2` release workflow

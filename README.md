@@ -172,7 +172,7 @@ python -m pip install tempus-ddb
 ```
 
 ### 2. From GitHub Release Wheels & SBOM
-Download the pre-built native wheel matching your platform or the SPDX SBOM from [GitHub Releases v0.5.3](https://github.com/elbuilder77/tempus-ddb/releases/tag/v0.5.3):
+Download the pre-built native wheel matching your platform or the SBOM files from [GitHub Releases v0.5.3](https://github.com/elbuilder77/tempus-ddb/releases/tag/v0.5.3). Releases cut by the tag workflow attach an SPDX SBOM and CycloneDX SBOMs for Rust and Python. Verify them with the commands in [docs/RELEASING.md](docs/RELEASING.md).
 ```bash
 pip install ./tempus_ddb-0.5.3-<platform>.whl
 ```

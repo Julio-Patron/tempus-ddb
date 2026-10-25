@@ -22,6 +22,13 @@ Please do **not** open a public issue for security vulnerabilities.
 We aim to acknowledge a report within 48 hours and will coordinate disclosure and a fix
 privately.
 
+## Verifying a release
+
+Release wheels, the source distribution, and the SPDX and CycloneDX SBOMs are
+signed with GitHub artifact attestations. Those attestations are Sigstore
+signatures stored in the repository. The verification commands and the manual
+approval gate are documented in [docs/RELEASING.md](docs/RELEASING.md).
+
 ## Current Security Boundary
 
 - The project is local-first. The SQLite databases are tamper-evident, not encrypted, and
