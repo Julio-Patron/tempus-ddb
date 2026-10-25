@@ -3,6 +3,7 @@
 Classification uses the exception type. A validation error stays FAILED.
 """
 
+import errno
 import http.client
 import json
 import ssl
@@ -42,7 +43,7 @@ def test_classifier_uses_exception_type_not_message_text():
     assert is_ambiguous_transport_error(
         error.HTTPError("https://example.com/x", 500, "err", None, None)
     )
-    assert is_ambiguous_transport_error(OSError(104, "Connection reset by peer"))
+    assert is_ambiguous_transport_error(OSError(errno.ECONNRESET, "Connection reset by peer"))
     for exc in (
         ValueError("amount 500.00 exceeds the limit"),
         RuntimeError("HTTP 500 Internal Server Error: Gateway timeout"),

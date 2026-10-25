@@ -10,8 +10,8 @@ to policy pattern lists, the payment beneficiary allowlist, and the HTTP domain
 allowlist. The change only turns a previous match into a denial.
 
 Migration notes are in the README section "Common cases that now break, and how to
-fix them". This change is independent of the transport-outcome classification and can
-ship on its own (0.5.4).
+fix them". This change is independent of the transport-outcome classification; both
+ship in 0.5.4.
 
 ### Security: ambiguous transport outcomes are classified by exception type
 
@@ -20,8 +20,8 @@ definitive failure, including a validation error, stays `FAILED`. Classification
 uses the exception type. The HTTP, payment, and Slack adapters follow this rule.
 
 Migration notes are in the README section "Common cases that now break, and how to
-fix them". This change is independent of the pattern-matching change and can ship
-on its own (0.5.5).
+fix them". This change is independent of the pattern-matching change; both ship in
+0.5.4.
 
 ### Documentation
 - README / CHANGELOG: the duplicate-key check applies to *verified* documents, not to what
