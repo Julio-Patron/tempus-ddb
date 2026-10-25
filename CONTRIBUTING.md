@@ -55,6 +55,12 @@ credentials, logs, caches, wheels, or build output.
 - Update [THREAT_MODEL.md](THREAT_MODEL.md) when a trust boundary changes.
 - Update [CHANGELOG.md](CHANGELOG.md) for user-visible behavior.
 
+## Releases
+
+Tagged releases are built by `.github/workflows/release.yml`. The procedure, the
+manual approval gate, and the `gh attestation verify` commands are in
+[docs/RELEASING.md](docs/RELEASING.md).
+
 ## Pull requests
 
 Describe the problem, the chosen approach, security and compatibility impact, and exact
