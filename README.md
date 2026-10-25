@@ -889,7 +889,9 @@ for earlier versions can hit `NON_EXACT_NUMBER` (the message names the path, for
 | `NaN`, `Infinity`, `1e400` or `-0` from the CLI (`--intent`, `--outcome`, `--policy`, `--metadata`) | `NON_EXACT_NUMBER` (raw text given to the Python/Rust API: `1e400` is `NON_EXACT_NUMBER`; `NaN`/`Infinity` are "must be valid JSON", they are not JSON) | Send a string, or write `0` for `-0` |
 
 Pattern matching now respects component boundaries (`.` and `/`). A `*` matches only as
-a whole component. These are denials, not new allows:
+a whole component. Glued stars become denials; a `*` that is already its own leading or
+middle component (`*.example.com`) used to be a dead literal and now matches, so review
+such entries before upgrading:
 
 | What you had | Result | Fix |
 | --- | --- | --- |

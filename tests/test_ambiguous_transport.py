@@ -43,7 +43,11 @@ def test_classifier_uses_exception_type_not_message_text():
     assert is_ambiguous_transport_error(
         error.HTTPError("https://example.com/x", 500, "err", None, None)
     )
-    assert is_ambiguous_transport_error(OSError(errno.ECONNRESET, "Connection reset by peer"))
+    # OSError(errno.ECONNRESET, ...) is promoted to ConnectionResetError by CPython and
+    # would only exercise the type branch; set errno on a plain OSError instead.
+    reset = OSError("Connection reset by peer")
+    reset.errno = errno.ECONNRESET
+    assert is_ambiguous_transport_error(reset)
     for exc in (
         ValueError("amount 500.00 exceeds the limit"),
         RuntimeError("HTTP 500 Internal Server Error: Gateway timeout"),

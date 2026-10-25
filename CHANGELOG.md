@@ -7,7 +7,10 @@
 Pattern matching now respects component boundaries (`.` and `/`). A `*` matches only
 as a whole component. A pattern that is not in that form matches nothing. This applies
 to policy pattern lists, the payment beneficiary allowlist, and the HTTP domain
-allowlist. The change only turns a previous match into a denial.
+allowlist. A `*` glued to text (`host*`, `vendor-*`) used to match as a prefix and now
+matches nothing. A `*` that is its own leading or middle component (`*.example.com`,
+`https://*.example.com/*`) used to be a dead literal and now matches that component, so
+review existing lists for entries of that form before upgrading.
 
 Migration notes are in the README section "Common cases that now break, and how to
 fix them". This change is independent of the transport-outcome classification; both
