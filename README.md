@@ -8,15 +8,15 @@
 **Zero-trust authorization · Single-use cryptographic permits · Tamper-evident receipts · MCP native**
 
 <p align="center">
-  <a href="https://github.com/elbuilder77/tempus-ddb/actions/workflows/ci.yml"><img src="https://github.com/elbuilder77/tempus-ddb/actions/workflows/ci.yml/badge.svg" alt="CI Build" /></a>
-  <a href="https://github.com/elbuilder77/tempus-ddb/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-passing-brightgreen.svg?logo=github" alt="Tests" /></a>
-  <a href="https://github.com/elbuilder77/tempus-ddb/releases"><img src="https://img.shields.io/github/v/release/elbuilder77/tempus-ddb?color=blue&logo=github" alt="GitHub Release" /></a>
+  <a href="https://github.com/Julio-Patron/tempus-ddb/actions/workflows/ci.yml"><img src="https://github.com/Julio-Patron/tempus-ddb/actions/workflows/ci.yml/badge.svg" alt="CI Build" /></a>
+  <a href="https://github.com/Julio-Patron/tempus-ddb/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/tests-passing-brightgreen.svg?logo=github" alt="Tests" /></a>
+  <a href="https://github.com/Julio-Patron/tempus-ddb/releases"><img src="https://img.shields.io/github/v/release/Julio-Patron/tempus-ddb?color=blue&logo=github" alt="GitHub Release" /></a>
   <a href="https://pypi.org/project/tempus-ddb/"><img src="https://img.shields.io/pypi/v/tempus-ddb.svg?logo=pypi&logoColor=white&color=blue" alt="PyPI Version" /></a>
   <a href="https://pypi.org/project/tempus-ddb/"><img src="https://img.shields.io/pypi/dm/tempus-ddb.svg?color=success" alt="PyPI Downloads" /></a>
   <a href="https://pypi.org/project/tempus-ddb/"><img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg?logo=python&logoColor=white" alt="Python 3.10+" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT" /></a>
   <a href="SECURITY.md"><img src="https://img.shields.io/badge/security-policy-blue.svg?logo=shield" alt="Security Policy" /></a>
-  <a href="https://github.com/elbuilder77/tempus-ddb/discussions"><img src="https://img.shields.io/badge/community-discussions-orange.svg?logo=github" alt="Community Discussions" /></a>
+  <a href="https://github.com/Julio-Patron/tempus-ddb/discussions"><img src="https://img.shields.io/badge/community-discussions-orange.svg?logo=github" alt="Community Discussions" /></a>
 </p>
 
 ---
@@ -26,7 +26,7 @@
 pip install tempus-ddb
 ```
 
-### 🚀 [Try the Live Interactive Trace Demo →](julio-patron.github.io/tempus-ddb/)
+### 🚀 [Try the Live Interactive Trace Demo →](https://julio-patron.github.io/tempus-ddb/trace.html)
 *Verify real cryptographic hashes, Ed25519 signatures, and tamper detection directly in your browser.*
 
 ---
@@ -37,11 +37,11 @@ pip install tempus-ddb
 > hash-linked event streaming, and signed monotonic checkpoints are implemented.
 > Distributed multi-container gate service is in progress (0.6).
 >
-> [Project site](https://elbuilder77.github.io/tempus-ddb/) ·
-> [Integration guide](https://elbuilder77.github.io/tempus-ddb/docs.html) ·
+> [Project site](https://julio-patron.github.io/tempus-ddb/) ·
+> [Integration guide](https://julio-patron.github.io/tempus-ddb/docs.html) ·
 > [Architecture Blueprints](docs/blueprints/README.md) ·
 > [Cookbooks](cookbooks/README.md) ·
-> [Interactive trace demo](https://elbuilder77.github.io/tempus-ddb/trace.html) ·
+> [Interactive trace demo](https://julio-patron.github.io/tempus-ddb/trace.html) ·
 > [Roadmap](ROADMAP.md) · [Security](SECURITY.md) ·
 > [Threat model](THREAT_MODEL.md) · [Contributing](CONTRIBUTING.md)
 
@@ -62,17 +62,33 @@ Tempus DDB creates an enforced **B2A (Bot-to-Agent / Bot-to-Action) Security Bou
 
 ---
 
-## ⚔️ Why Tempus vs Traditional RBAC / MCP Gateways?
+## ⚔️ ¿Por qué Tempus y no un gateway RBAC? / Why Tempus vs Traditional RBAC / MCP Gateways?
 
-In 2026, several MCP governance proxies (such as Bifrost, Obot, MCPX, MintMCP) manage agent access using role-based access control (RBAC). **Tempus DDB solves a completely different, deeper architectural problem:**
+En 2026, varios productos de gobernanza MCP (Bifrost, Obot, MCPX, MintMCP) administran el acceso del agente con control de acceso basado en roles (RBAC). **Tempus DDB resuelve un problema distinto.** El producto actual publica un servidor MCP cuyas herramientas el agente llama de forma voluntaria. No intercepta el tráfico de otras herramientas: un modo proxy está planificado y todavía no forma parte del producto.
 
-| Dimension | Traditional MCP Gateways (RBAC / Proxies) | Tempus DDB (B2A Toll Gate) |
+In 2026, several MCP governance products (such as Bifrost, Obot, MCPX, MintMCP) manage agent access using role-based access control (RBAC). **Tempus DDB solves a different problem.** The current product ships an MCP server whose tools the agent calls voluntarily. It does not intercept other tools' traffic: a proxy mode is planned and is not part of the product today.
+
+### Español
+
+| Dimensión | Gateways MCP tradicionales (RBAC) | Tempus DDB (peaje B2A) |
 |---|---|---|
-| **Security Model** | **Authorize & Forward (*"Trust"*):** Checks rules, forwards requests, and trusts the agent and downstream service. | **Cryptographic Toll (*"Zero-Trust"*):** Agent signs intent; Gate issues single-use permit; Executor consumes permit atomically. |
-| **Credential Boundary** | Agent or Gateway proxy holds raw API keys and database credentials. | **Strict Credential Isolation:** Agent *never* sees or handles downstream secrets (`GITHUB_TOKEN`, Slack tokens, API keys). |
-| **Replay & Loop Prevention** | Advisory rate limits; repeated calls within role permissions pass through. | **Cryptographic Single Consumption:** Consumed permits are permanently invalidated. Replay attempts fail closed. |
-| **Tamper Detection** | Server application logs (which can be modified, truncated, or forged). | **Dual-Signed Immutable Receipts:** Cryptographically linked (Ed25519 + SHA-256) and verifiable offline by anyone. |
-| **Financial / High-Impact Actions** | Unstructured JSON payloads. | **Universal `money` Contract:** Hard limits, currency enforcement, and tenant-scoped asset ceilings. |
+| **Modelo de seguridad** | **Autorizar y reenviar:** comprueba reglas, reenvía la petición y confía en el agente y en el servicio destino. | **Peaje criptográfico:** el agente firma la intención; el gate emite un permiso de un solo uso; el ejecutor lo consume de forma atómica. |
+| **Límite de credenciales** | El agente o el gateway conserva las API keys y las credenciales de base de datos. | **Aislamiento estricto:** el agente nunca ve ni maneja secretos aguas abajo (`GITHUB_TOKEN`, tokens de Slack, API keys). |
+| **Reproducción y bucles** | Límites de tasa consultivos; las llamadas repetidas dentro del rol pasan. | **Consumo criptográfico único:** un permiso consumido queda invalidado. Un reintento falla cerrado. |
+| **Detección de manipulación** | Logs de aplicación, que se pueden modificar, truncar o falsificar. | **Recibos inmutables con doble firma:** enlazados con Ed25519 y SHA-256, verificables offline. |
+| **Acciones financieras o de alto impacto** | Cargas JSON sin contrato. | **Contrato universal `money`:** límites duros, control de moneda y techos por tenant. |
+| **Superficie MCP** | Un gateway puede colocarse delante de otras herramientas y reenviar llamadas. | **Servidor MCP voluntario.** El agente llama las herramientas de Tempus. Un proxy que intercepte el resto del tráfico está planificado y no se distribuye. |
+
+### English
+
+| Dimension | Traditional MCP gateways (RBAC) | Tempus DDB (B2A toll gate) |
+|---|---|---|
+| **Security Model** | **Authorize and forward:** checks rules, forwards the request, and trusts the agent and the downstream service. | **Cryptographic toll:** the agent signs intent; the gate issues a single-use permit; the executor consumes that permit atomically. |
+| **Credential Boundary** | The agent or the gateway holds raw API keys and database credentials. | **Strict credential isolation:** the agent never sees or handles downstream secrets (`GITHUB_TOKEN`, Slack tokens, API keys). |
+| **Replay & Loop Prevention** | Advisory rate limits; repeated calls within role permissions pass through. | **Cryptographic single consumption:** a consumed permit is permanently invalidated. Replay attempts fail closed. |
+| **Tamper Detection** | Server application logs, which can be modified, truncated, or forged. | **Dual-signed immutable receipts:** cryptographically linked (Ed25519 + SHA-256) and verifiable offline. |
+| **Financial / High-Impact Actions** | Unstructured JSON payloads. | **Universal `money` contract:** hard limits, currency enforcement, and tenant-scoped asset ceilings. |
+| **MCP surface** | A gateway can sit in front of other tools and forward calls. | **Voluntary MCP server.** The agent calls Tempus tools. A proxy that would intercept other MCP traffic is planned and is not shipped. |
 
 ---
 
@@ -95,7 +111,7 @@ Inspect how Tempus binds the entire lifecycle (Intent ➔ Authorization ➔ Exec
    Signed Intent ──► Expiring Permit ──► Execution Receipt ──► Auditable Trace
 ```
 
-👉 **[Launch Interactive In-Browser Demo](https://elbuilder77.github.io/tempus-ddb/trace.html)** — *Test tamper detection, hash validation, and signature verification live.*
+👉 **[Launch Interactive In-Browser Demo](https://julio-patron.github.io/tempus-ddb/trace.html)** — *Test tamper detection, hash validation, and signature verification live.*
 
 ---
 
@@ -172,14 +188,14 @@ python -m pip install tempus-ddb
 ```
 
 ### 2. From GitHub Release Wheels & SBOM
-Download the pre-built native wheel matching your platform or the SPDX SBOM from [GitHub Releases v0.5.3](https://github.com/elbuilder77/tempus-ddb/releases/tag/v0.5.3):
+Download the pre-built native wheel matching your platform or the SPDX SBOM from [GitHub Releases v0.5.3](https://github.com/Julio-Patron/tempus-ddb/releases/tag/v0.5.3):
 ```bash
 pip install ./tempus_ddb-0.5.3-<platform>.whl
 ```
 
 ### 3. From Source (Development)
 ```bash
-git clone https://github.com/elbuilder77/tempus-ddb.git
+git clone https://github.com/Julio-Patron/tempus-ddb.git
 cd tempus-ddb
 pip install -e ".[dev]"
 ```
@@ -521,7 +537,7 @@ tempus list-policies
 tempus identity-events
 ```
 
-The public [trace demo](https://elbuilder77.github.io/tempus-ddb/trace.html) is a
+The public [trace demo](https://julio-patron.github.io/tempus-ddb/trace.html) is a
 synthetic, browser-only illustration of hashes, signatures and record binding. A future
 read-only audit console must derive its views from these contracts; it is not in the
 current source line.

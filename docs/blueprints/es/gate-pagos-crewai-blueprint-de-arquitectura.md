@@ -1,6 +1,6 @@
 # Gate de Pagos B2A para CrewAI — Blueprint de arquitectura
 
-*Patrón B2A generalizado a partir de [tempus-ddb](https://github.com/elbuilder77/tempus-ddb), aplicado a un crew de CrewAI que paga proveedores vía Stripe.*
+*Patrón B2A generalizado a partir de [tempus-ddb](https://github.com/Julio-Patron/tempus-ddb), aplicado a un crew de CrewAI que paga proveedores vía Stripe.*
 
 ## Diagrama de flujo
 

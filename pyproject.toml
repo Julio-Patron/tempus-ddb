@@ -42,10 +42,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/elbuilder77/tempus-ddb"
-Documentation = "https://elbuilder77.github.io/tempus-ddb/"
-Repository = "https://github.com/elbuilder77/tempus-ddb"
-Issues = "https://github.com/elbuilder77/tempus-ddb/issues"
+Homepage = "https://github.com/Julio-Patron/tempus-ddb"
+Documentation = "https://julio-patron.github.io/tempus-ddb/"
+Repository = "https://github.com/Julio-Patron/tempus-ddb"
+Issues = "https://github.com/Julio-Patron/tempus-ddb/issues"
 
 [project.scripts]
 tempus = "tempus_ddb.cli:main"

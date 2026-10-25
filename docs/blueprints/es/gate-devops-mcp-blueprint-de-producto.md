@@ -1,6 +1,6 @@
 # Gate B2A para Agente DevOps sobre MCP — Blueprint de producto
 
-*Inspirado en el patrón B2A (Bot-to-Agent) de [tempus-ddb](https://github.com/elbuilder77/tempus-ddb), adaptado a un servidor MCP propio para un agente de DevOps que abre PRs en GitHub y manda alertas a Slack.*
+*Inspirado en el patrón B2A (Bot-to-Agent) de [tempus-ddb](https://github.com/Julio-Patron/tempus-ddb), adaptado a un servidor MCP propio para un agente de DevOps que abre PRs en GitHub y manda alertas a Slack.*
 
 ## Tagline
 Que abrir un PR o mandar una alerta a Slack pase siempre por un permiso firmado, nunca por una tool que el agente pueda invocar directo.
