@@ -79,7 +79,7 @@ single-consumption or historical verification guarantees.
 - Complete an independent security review and remediate high-severity findings.
 - Exercise release, upgrade, key rotation, revocation, backup, and incident procedures in
   a clean environment.
-- Publish signed reproducible artifacts with provenance and an SPDX SBOM.
+- Publish signed reproducible artifacts with provenance and SPDX and CycloneDX SBOMs.
 - Provide a read-only audit API and console that never becomes part of the authorization
   path.
 - Document the supported deployment profiles and their availability guarantees.
