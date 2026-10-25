@@ -644,8 +644,7 @@ impl SqliteStorage {
 
     /// Install and activate a deterministic policy bundle signed by the gate.
     pub fn install_policy(&self, policy_spec: &str) -> Result<String, String> {
-        let spec: serde_json::Value = serde_json::from_str(policy_spec)
-            .map_err(|e| strict_json::parse_error_message("Policy spec", &e))?;
+        let spec = strict_json::parse_labeled(policy_spec, "policy")?;
         strict_json::reject_inexact_numbers(&spec, "policy")?;
         let signer = self.load_signer()?;
         let bundle = phase3::install_policy(&self.conn, &signer, &spec, b2a::now_micros()?)?;

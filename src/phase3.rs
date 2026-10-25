@@ -179,8 +179,10 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<(), String> {
 }
 
 /// Explicit development opt-in: install a signed wildcard policy that allows every
-/// action, resource and executor for every tenant without its own policy. Idempotent
-/// while the dev policy is active; refuses to replace a different active `*` policy.
+/// action, resource and executor for every tenant without its own policy. Currency is
+/// not listed: `allowed_currencies` accepts only exact codes, so omitting it leaves
+/// currency unconstrained. Idempotent while the dev policy is active; refuses to
+/// replace a different active `*` policy.
 pub(crate) fn install_allow_all_dev_policy(
     conn: &Connection,
     signer: &ConfiguredSigner,
@@ -215,8 +217,7 @@ pub(crate) fn install_allow_all_dev_policy(
             "allowed_resources": ["*"],
             "allowed_executors": ["*"],
             "max_ttl_seconds": 86400,
-            "max_input_bytes": 65536,
-            "allowed_currencies": ["*"],
+            "max_input_bytes": 65536
         }
     });
     install_policy(conn, signer, &spec, issued_at)
@@ -638,6 +639,9 @@ pub(crate) fn evaluate_policy(
     if input_bytes > max_input_bytes {
         reasons.push("POLICY_INPUT_TOO_LARGE".to_string());
     }
+    // Payment actions cannot omit money or pay zero. Invalid money is an error, the same
+    // one `validate_intent` returns, so a permit and its later re-evaluation agree.
+    reject_payment_without_money(&action_type, intent)?;
     if let Some(money) = intent.get("money").filter(|value| !value.is_null()) {
         if !money_allowed(constraints, money)? {
             reasons.push("POLICY_MONEY_DENIED".to_string());
@@ -709,7 +713,7 @@ fn validate_policy_spec(spec: &Value) -> Result<(), String> {
         return Err("TEMPUS_POLICY_INVALID: max_input_bytes must be 1..10000000".to_string());
     }
     if let Some(currencies) = constraints.get("allowed_currencies") {
-        pattern_list(Some(currencies), "allowed_currencies")?;
+        exact_currency_list(currencies)?;
     }
     if let Some(beneficiaries) = constraints.get("allowed_beneficiaries") {
         pattern_list(Some(beneficiaries), "allowed_beneficiaries")?;
@@ -723,6 +727,58 @@ fn validate_policy_spec(spec: &Value) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// ISO-style currency code: three ASCII uppercase letters, with no wildcard.
+fn is_exact_currency_code(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 3 && bytes.iter().all(|byte| byte.is_ascii_uppercase())
+}
+
+/// `allowed_currencies` is an exact allowlist. `*`, `US*` and any other pattern are
+/// rejected here, when the bundle is loaded and again when it is evaluated.
+fn exact_currency_list(value: &Value) -> Result<Vec<&str>, String> {
+    let codes = pattern_list(Some(value), "allowed_currencies")?;
+    for code in &codes {
+        if !is_exact_currency_code(code) {
+            return Err(format!(
+                "TEMPUS_POLICY_INVALID: allowed_currencies entries must be exact currency codes, not patterns ({code})"
+            ));
+        }
+    }
+    Ok(codes)
+}
+
+/// Payment action types the gate and the payment executor both recognize.
+pub(crate) fn is_payment_action(action_type: &str) -> bool {
+    matches!(
+        action_type,
+        "finance.disburse" | "finance.transfer" | "payment.charge"
+    )
+}
+
+/// A payment action has no effect without a money object whose amount is greater than zero.
+pub(crate) fn reject_payment_without_money(
+    action_type: &str,
+    intent: &Value,
+) -> Result<(), String> {
+    if !is_payment_action(action_type) {
+        return Ok(());
+    }
+    match intent.get("money") {
+        Some(money) if money.is_object() => {
+            let (amount, _) = validate_money(money)?;
+            if amount == 0 {
+                Err(
+                    "TEMPUS_INVALID_CONTRACT: a payment action requires a non-zero amount"
+                        .to_string(),
+                )
+            } else {
+                Ok(())
+            }
+        }
+        _ => Err("TEMPUS_INVALID_CONTRACT: a payment action requires a money object".to_string()),
+    }
 }
 
 fn matches_patterns(value: Option<&Value>, candidate: &str) -> Result<bool, String> {
@@ -770,7 +826,18 @@ pub(crate) fn validate_money(money: &Value) -> Result<(u64, String), String> {
             )),
         }
     };
-    let currency = match (name("currency")?, name("asset")?) {
+    let currency_name = name("currency")?;
+    let asset_name = name("asset")?;
+    for (field, value) in [("currency", currency_name), ("asset", asset_name)] {
+        if let Some(value) = value {
+            if !is_exact_currency_code(value) {
+                return Err(format!(
+                    "TEMPUS_INVALID_CONTRACT: money.{field} must be an exact 3-letter currency code"
+                ));
+            }
+        }
+    }
+    let currency = match (currency_name, asset_name) {
         (Some(currency), Some(asset)) if currency != asset => {
             return Err(
                 "TEMPUS_INVALID_CONTRACT: money.currency and money.asset must be the same value"
@@ -828,7 +895,9 @@ fn money_allowed(
     let (amount, currency) = validate_money(money)?;
     let currency = currency.as_str();
     if let Some(currencies) = constraints.get("allowed_currencies") {
-        if !matches_patterns(Some(currencies), currency)? {
+        // Exact codes only: a pattern that survived in an old bundle does not match.
+        let codes = exact_currency_list(currencies)?;
+        if !codes.contains(&currency) {
             return Ok(false);
         }
     }
@@ -1305,6 +1374,111 @@ mod tests {
                 "{money}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn currency_codes_are_exact_and_wildcards_are_rejected() {
+        for asset in ["usd", "USD ", "USD\u{200b}", "ＵＳＤ", "US*", "*"] {
+            let error = validate_money(&json!({"amount": "1.00", "asset": asset})).unwrap_err();
+            assert!(
+                error.contains("exact 3-letter currency code"),
+                "{asset:?}: {error}"
+            );
+        }
+        let spec = |currencies: Value| {
+            json!({
+                "schema_version": POLICY_BUNDLE_SCHEMA,
+                "policy_version": "v1",
+                "tenant_id": "acme",
+                "constraints": {
+                    "allowed_action_types": ["payment.charge"],
+                    "allowed_resources": ["*"],
+                    "allowed_executors": ["*"],
+                    "max_ttl_seconds": 60,
+                    "max_input_bytes": 1024,
+                    "allowed_currencies": currencies
+                }
+            })
+        };
+        assert!(validate_policy_spec(&spec(json!(["USD", "EUR"]))).is_ok());
+        for currencies in [
+            json!(["US*"]),
+            json!(["*"]),
+            json!(["usd"]),
+            json!(["USD "]),
+        ] {
+            let error = validate_policy_spec(&spec(currencies)).unwrap_err();
+            assert!(
+                error.contains("TEMPUS_POLICY_INVALID") && error.contains("exact currency codes"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn payment_actions_require_a_positive_amount() {
+        let paid =
+            json!({"action_type": "payment.charge", "money": {"amount": "1.00", "asset": "USD"}});
+        assert!(reject_payment_without_money("payment.charge", &paid).is_ok());
+        assert!(reject_payment_without_money("github.create_issue", &json!({})).is_ok());
+        for action in ["finance.disburse", "finance.transfer", "payment.charge"] {
+            for intent in [
+                json!({}),
+                json!({"money": null}),
+                json!({"money": {"amount": "0", "asset": "USD"}}),
+                json!({"money": {"amount": "0.00", "asset": "USD"}}),
+                json!({"money": {"amount": "000", "asset": "USD"}}),
+            ] {
+                let error = reject_payment_without_money(action, &intent).unwrap_err();
+                assert!(
+                    error.starts_with("TEMPUS_INVALID_CONTRACT"),
+                    "{action} {intent}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn adversarial_amount_spellings_and_the_minor_unit_boundary() {
+        for amount in [
+            "1e3",
+            "-1.00",
+            "+1.00",
+            "1,00",
+            " 1.00",
+            "1.000",
+            "5.",
+            ".5",
+            "１.００",
+            "184467440737095516.16",
+        ] {
+            let error = validate_money(&json!({"amount": amount, "asset": "USD"})).unwrap_err();
+            assert!(
+                error.starts_with("TEMPUS_INVALID_CONTRACT"),
+                "{amount}: {error}"
+            );
+        }
+        for minor in [json!(-1), json!("100"), json!(true), json!(1.5)] {
+            let money = json!({"amount_minor": minor, "asset": "USD"});
+            let error = validate_money(&money).unwrap_err();
+            assert!(error.contains("amount_minor"), "{money}: {error}");
+        }
+        let constraints = json!({
+            "allowed_currencies": ["USD"],
+            "max_money_amount_minor": 5000
+        });
+        let constraints = constraints.as_object().unwrap();
+        assert!(money_allowed(constraints, &json!({"amount": "50.00", "asset": "USD"})).unwrap());
+        assert!(!money_allowed(constraints, &json!({"amount": "50.01", "asset": "USD"})).unwrap());
+        assert!(
+            money_allowed(constraints, &json!({"amount": "00050.00", "asset": "USD"})).unwrap()
+        );
+        assert_eq!(
+            validate_money(&json!({"amount": "00050.00", "asset": "USD"}))
+                .unwrap()
+                .0,
+            5000
+        );
     }
 
     struct TestRemoteSigner {

@@ -17,20 +17,21 @@ from tempus_ddb.payment_executor import (
 from test_money_binding import RecordingTransport, _intent, _world
 
 AMOUNTS_BOTH_ACCEPT = [
-    "0",
-    "0.0",
     "5",
     "5.5",
     "5.50",
     "05.00",
     "0" * 5000 + "5.00",
-    "000",
     "25.00",
     "10000.00",
     "184467440737095516.15",  # u64::MAX minor units
 ]
 
 AMOUNTS_BOTH_REFUSE = [
+    "0",
+    "0.0",
+    "0.00",
+    "000",
     "5.",
     "0.",
     "100.",
@@ -39,13 +40,18 @@ AMOUNTS_BOTH_REFUSE = [
     "5.5.",
     "5.555",
     "-5",
+    "-1.00",
     "+5",
+    "+1.00",
     " 5",
+    " 1.00",
     "5 ",
     "5\n",
     "1e3",
     "0x10",
     "5,00",
+    "1,00",
+    "1.000",
     "Infinity",
     "NaN",
     "",

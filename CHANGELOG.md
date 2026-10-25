@@ -2,10 +2,22 @@
 
 ## [Unreleased]
 
+### Validation
+- Money checks are stricter and fail closed. The gate (`parse_canonical`), the Rust
+  executor and the Python executor runtime reject a repeated JSON object key with
+  `DUPLICATE_JSON_KEY`. Payment actions (`finance.disburse`, `finance.transfer`,
+  `payment.charge`) require a `money` object and a non-zero amount
+  (`TEMPUS_INVALID_CONTRACT`). `allowed_currencies` accepts only exact 3-letter codes;
+  a wildcard is rejected when the policy is loaded. The dev allow-all policy no longer
+  sets that field, so it does not constrain currency. The executor runtime uses only the
+  verified top-level intent.
+- Money validation is still implemented in both Rust and Python (see ROADMAP, technical
+  debt). The two copies are covered by the same adversarial cases.
+
 ### Documentation
-- README / CHANGELOG: the duplicate-key check applies to *verified* documents, not to what
-  the gate receives (`parse_canonical`: the last value of a repeated key wins and only it is
-  signed), and a new section "Common cases that now break, and how to fix them" covers
+- README / CHANGELOG: a repeated JSON object key is rejected with `DUPLICATE_JSON_KEY` by
+  verifiers and by the gate (`parse_canonical`), the Rust executor and the Python executor
+  runtime. Nothing ambiguous is signed. A section "Common cases that now break, and how to fix them" covers
   `requested_at` from `time.time()`, numeric `money.amount`, floats in `input`, decimals in
   metadata or policies, and `NaN`/`Infinity`/`-0` from the CLI.
 - Legacy ledger (`tempus record` / `tempus verify`, `TEMPUS_LEGACY_TOOLS=1`) is documented

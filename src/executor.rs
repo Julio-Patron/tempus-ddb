@@ -293,7 +293,7 @@ impl MediatedExecutor {
     }
 
     pub fn verify_and_consume_permit(&self, permit_json: &str) -> Result<Value, String> {
-        let permit: Value = serde_json::from_str(permit_json).map_err(|e| e.to_string())?;
+        let permit = crate::strict_json::parse_labeled(permit_json, "permit")?;
 
         let schema = permit.get("schema_version").and_then(|v| v.as_str());
         if schema != Some("tempus.authorization-result.v1") {
@@ -764,8 +764,7 @@ mod tests {
                 "allowed_resources": ["*"],
                 "allowed_executors": ["*"],
                 "max_ttl_seconds": 86400,
-                "max_input_bytes": 65536,
-                "allowed_currencies": ["*"],
+                "max_input_bytes": 65536
             },
             "issued_at": issued_at,
             "signer": {
@@ -892,5 +891,43 @@ mod tests {
             err_consumed.contains("TEMPUS_PERMIT_ALREADY_CONSUMED"),
             "Expected already consumed error, got: {err_consumed}"
         );
+    }
+
+    #[test]
+    fn duplicate_json_keys_in_a_permit_are_rejected() {
+        let temp = tempdir().unwrap();
+        let key = SigningKey::generate(&mut OsRng);
+        let keyfile = temp.path().join("executor.keys.json");
+        fs::write(
+            &keyfile,
+            json!({
+                "public_key": hex::encode(key.verifying_key().to_bytes()),
+                "private_key": hex::encode(key.to_bytes()),
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let executor = MediatedExecutor::new(
+            Box::new(
+                SqliteExecutorStorage::with_pool_size(
+                    temp.path().join("executor.db").to_str().unwrap(),
+                    1,
+                )
+                .unwrap(),
+            ),
+            keyfile.to_str().unwrap(),
+            &hex::encode(key.verifying_key().to_bytes()),
+            "tenant",
+        )
+        .unwrap();
+        for raw in [
+            r#"{"amount":"9999.00","amount":"25.00"}"#,
+            r#"{"asset":"EUR","asset":"USD"}"#,
+            r#"{"money":{"amount":"1.00"},"money":{"amount":"2.00"}}"#,
+            r#"{"a":1,"\u0061":2}"#,
+        ] {
+            let error = executor.verify_and_consume_permit(raw).unwrap_err();
+            assert!(error.starts_with("DUPLICATE_JSON_KEY"), "{raw}: {error}");
+        }
     }
 }

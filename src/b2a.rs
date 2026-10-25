@@ -187,8 +187,7 @@ pub(crate) fn canonicalize(value: &Value) -> Result<String, String> {
 }
 
 pub(crate) fn parse_canonical(raw: &str, label: &str) -> Result<(Value, String), String> {
-    let value: Value = serde_json::from_str(raw)
-        .map_err(|e| crate::strict_json::parse_error_message(label, &e))?;
+    let value = crate::strict_json::parse_labeled(raw, label)?;
     crate::strict_json::reject_inexact_numbers(&value, label)?;
     let canonical = canonicalize(&value)?;
     Ok((value, canonical))
@@ -287,7 +286,7 @@ fn validate_intent(value: &Value, expected_agent: &str) -> Result<IntentFields, 
         );
     }
     let idempotency_key = string_field(value, "idempotency_key")?;
-    string_field(value, "action_type")?;
+    let action_type = string_field(value, "action_type")?;
     string_field(value, "resource")?;
     let requested_at = integer_field(value, "requested_at")?;
     if let Some(money) = value.get("money") {
@@ -299,6 +298,7 @@ fn validate_intent(value: &Value, expected_agent: &str) -> Result<IntentFields, 
             crate::phase3::validate_money(money)?;
         }
     }
+    crate::phase3::reject_payment_without_money(&action_type, value)?;
     Ok(IntentFields {
         tenant_id,
         agent_id,
@@ -1749,8 +1749,7 @@ pub(crate) fn commit_outcome(
     let executor_key = load_signing_key(executor_keyfile)?;
     let executor_id = hex::encode(executor_key.verifying_key().to_bytes());
 
-    let mut outcome_value: Value = serde_json::from_str(outcome)
-        .map_err(|e| crate::strict_json::parse_error_message("outcome", &e))?;
+    let mut outcome_value = crate::strict_json::parse_labeled(outcome, "outcome")?;
     crate::strict_json::reject_inexact_numbers(&outcome_value, "outcome")?;
     if let Some(obj) = outcome_value.as_object_mut() {
         obj.insert(
@@ -2751,4 +2750,24 @@ pub(crate) fn verify_bundle_pinned(
         ));
     }
     canonicalize(&result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_canonical_rejects_duplicate_object_keys() {
+        for raw in [
+            r#"{"amount":"9999.00","amount":"25.00"}"#,
+            r#"{"asset":"EUR","asset":"USD"}"#,
+            r#"{"money":{"amount":"1.00","asset":"USD"},"money":{"amount":"2.00","asset":"USD"}}"#,
+            r#"{"a":1,"\u0061":2}"#,
+        ] {
+            let error = parse_canonical(raw, "intent").unwrap_err();
+            assert!(error.starts_with("DUPLICATE_JSON_KEY"), "{raw}: {error}");
+        }
+        let (value, _) = parse_canonical(r#"{"amount":"25.00","asset":"USD"}"#, "intent").unwrap();
+        assert_eq!(value["amount"], "25.00");
+    }
 }

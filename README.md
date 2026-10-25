@@ -275,7 +275,9 @@ The same template ships as `config/policy.github.example.json` in the source tre
 
 To try the flow without writing a policy, opt in explicitly. This installs a signed
 policy that **allows every action, resource and executor** for every tenant without its
-own policy. The CLI prints a warning, `tempus doctor` reports `active_policy: FAIL`
+own policy. It does not set `allowed_currencies`: that list accepts only exact 3-letter
+codes (a wildcard is rejected at install), and leaving it unset does not constrain
+currency. The CLI prints a warning, `tempus doctor` reports `active_policy: FAIL`
 while it is active, and every receipt carries the `tempus.dev-allow-all.v1.*`
 `policy_version`. Never use it in production.
 
@@ -297,7 +299,10 @@ It is now ignored (the gate denies). Install a real policy, or opt in with
 
 Policy evaluation is deterministic and rejects unknown constraints, floating-point input,
 oversized input, tenant/resource/action mismatches, excessive TTL, disallowed executors,
-and money metadata outside the configured currency or minor-unit ceiling.
+and money metadata outside the configured currency or minor-unit ceiling. Currency
+allowlists are exact codes (`USD`), never patterns (`*`, `US*`). Payment actions
+(`finance.disburse`, `finance.transfer`, `payment.charge`) require a `money` object and
+a non-zero amount.
 
 ## End-to-end from the CLI
 
@@ -624,7 +629,9 @@ tempus-slack-executor \
 
 ### 4. Pluggable Financial Adapter (`tempus-payment-executor`)
 Reference pluggable executor that enforces the universal `money` envelope (`amount` or `amount_minor`, `asset` or `currency`, `beneficiary`; fields that disagree are refused) and minor-unit limits with credential isolation:
-- Supported actions: `finance.disburse`, `finance.transfer`, `payment.charge`.
+- Supported actions: `finance.disburse`, `finance.transfer`, `payment.charge`. Each one
+  requires a `money` object and a non-zero amount; a missing, null, or zero amount is
+  refused (`TEMPUS_INVALID_CONTRACT`) and nothing is signed.
 - **Bring Your Own Provider:** Implements a pluggable `PaymentTransport` interface. Shipped with a deterministic mock transport for verification and testing; plug in your real Stripe/Wise API client at the transport boundary without exposing payment keys to the AI agent.
 
 ```bash
@@ -643,8 +650,11 @@ tempus-payment-executor \
   for three-decimal ones (BHD, KWD). Express limits per currency with that in mind, or keep
   such currencies out of `allowed_currencies`.
 - `money.beneficiary` must be a non-empty string; it is paid exactly as written.
+  `allowed_beneficiaries` may use a textual prefix (`vendor-*`). `allowed_currencies` may
+  not: only exact 3-letter codes, and a wildcard in that list is rejected when the policy
+  is installed.
 - **This executor is not a complete payment control.** It checks, per intent, the currency,
-  the beneficiary pattern and one maximum amount, with textual patterns; it has no
+  the beneficiary pattern and one maximum amount; it has no
   cumulative, daily or velocity limits, no sanctions/KYC checks, no confirmation of the
   provider's settlement, and the shipped transport is a mock. Put the real controls
   (provider-side limits, approvals, reconciliation) at the provider.
@@ -806,13 +816,11 @@ Same exit codes as above (0 VERIFIED, 2 INVALID, 1 usage). Python:
 ### What VERIFIED means, and how strict it is
 
 - A document that repeats a JSON object key anywhere (`"amount":"9999.00","amount":"25.00"`)
-  is `INVALID` (`DUPLICATE_JSON_KEY`): parsers disagree on which value wins. This check is
-  made when *verifying* documents. It is **not** made by the gate when it receives an
-  intent, outcome, policy or metadata (`parse_canonical`): there the last value of a repeated
-  key wins, and what is signed holds only that value (through the CLI, Python's `json.loads`
-  already collapses it before the gate sees it). So a repeated key cannot produce an
-  ambiguous signed document, but the gate will not tell the sender that its input was
-  ambiguous; do not generate JSON with repeated keys.
+  is refused with `DUPLICATE_JSON_KEY`: parsers disagree on which value wins. Verifiers
+  report the document `INVALID`. The gate applies the same rule when it receives an
+  intent, outcome, policy or metadata (`parse_canonical`), and the Rust executor and the
+  Python executor runtime reject a permit that repeats a key before consuming it. Nothing
+  is signed from an ambiguous document. Do not generate JSON with repeated keys.
 - Fields outside the schema at the top level of a bundle, in its `trace` or in its
   `checkpoint` wrapper are `INVALID` (`UNKNOWN_FIELD (<path>)`): they would be unsigned
   text travelling inside a verified file.

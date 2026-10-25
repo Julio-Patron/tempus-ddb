@@ -193,6 +193,35 @@ class ExecutorRuntimeError(RuntimeError):
     """Base error for runtime and permit verification failures."""
 
 
+def _reject_duplicate_keys(pairs):
+    """object_pairs_hook: a repeated key is ambiguous, so it is an error."""
+    seen = {}
+    for key, item in pairs:
+        if key in seen:
+            raise ValueError(
+                f"DUPLICATE_JSON_KEY: object key {key!r} appears more than once"
+            )
+        seen[key] = item
+    return seen
+
+
+def _parse_permit(permit_json: str):
+    """The permit object, or None when the text is not JSON.
+
+    Repeated keys raise ExecutorRuntimeError with DUPLICATE_JSON_KEY before the
+    permit is consumed. Any other parse failure is left to the Rust executor so
+    its existing error text stays the one callers already match.
+    """
+    try:
+        return json.loads(permit_json, object_pairs_hook=_reject_duplicate_keys)
+    except ValueError as exc:
+        if "DUPLICATE_JSON_KEY" in str(exc):
+            raise ExecutorRuntimeError(
+                "DUPLICATE_JSON_KEY: permit repeats a JSON object key"
+            ) from exc
+        return None
+
+
 class UnknownExecutionError(ExecutorRuntimeError):
     """The outcome is ambiguous (e.g. timeout or 5xx); must not be retried automatically."""
 
@@ -263,6 +292,11 @@ class ExecutorRuntime:
 
     def execute_permit(self, permit_json: str, adapter: ActionAdapter) -> str:
         """Enforce atomic permit consumption, invoke adapter, and sign outcome receipt."""
+        # Reject an ambiguous document before the permit is consumed. The verified
+        # intent is the top-level `intent` bound by `authorization.intent_hash`.
+        # `authorization.intent` is not an execution source.
+        permit_data = _parse_permit(permit_json)
+
         # 1. Enforce atomic single-consumption and schema verification
         consumed_auth_str = self._executor.verify_and_consume_permit(permit_json)
         consumed_auth = json.loads(consumed_auth_str)
@@ -270,10 +304,13 @@ class ExecutorRuntime:
         action_id = consumed_auth["action_id"]
 
         try:
-            permit_data = json.loads(permit_json)
-            intent = permit_data.get("intent") or permit_data.get(
-                "authorization", {}
-            ).get("intent", {})
+            if permit_data is None:
+                permit_data = json.loads(permit_json)
+            intent = permit_data.get("intent")
+            if not isinstance(intent, dict):
+                raise ExecutorRuntimeError(
+                    "TEMPUS_INVALID_CONTRACT: verified intent must be a JSON object"
+                )
             action_type = intent.get("action_type")
 
             if action_type not in adapter.supported_actions:
