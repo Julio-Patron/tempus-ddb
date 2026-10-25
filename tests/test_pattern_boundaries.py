@@ -1,7 +1,7 @@
 """Policy patterns and the HTTP allowlist match on component boundaries.
 
-A `*` is a whole component split on `/` and `.`. A star glued to text matches
-nothing, so a pattern cannot widen into a neighboring host or path segment.
+A `*` is a whole component split on `/` and `.`. A `*` that is not its own
+component matches nothing.
 """
 
 import json
@@ -21,7 +21,7 @@ def _refuses(url, domains):
         _validate_https_url(url, domains)
 
 
-def test_exact_host_does_not_include_a_lookalike_or_a_subdomain():
+def test_exact_host_matches_only_that_host():
     _allows("https://api.example.com/v1", {"api.example.com"})
     _refuses("https://api.example.com.evil.com/v1", {"api.example.com"})
     _refuses("https://foo.api.example.com/v1", {"api.example.com"})
@@ -99,13 +99,13 @@ def _decision(gate, agent_id, agent_keys, patterns, resource, key):
 @pytest.mark.parametrize(
     ("patterns", "resource", "allowed"),
     [
-        pytest.param(["host*"], "host.evil.com", False, id="host-star-lookalike"),
+        pytest.param(["host*"], "host.evil.com", False, id="host-star-other"),
         pytest.param(["host*"], "host", False, id="host-star-exact"),
         pytest.param(["*.example.com"], "a.example.com", True, id="wildcard-subdomain"),
         pytest.param(["*.example.com"], "a.b.example.com", True, id="wildcard-nested"),
         pytest.param(["*.example.com"], "evilexample.com", False, id="wildcard-no-dot"),
         pytest.param(
-            ["*.example.com"], "example.com.evil.com", False, id="wildcard-suffix-host"
+            ["*.example.com"], "example.com.evil.com", False, id="wildcard-extra-labels"
         ),
         pytest.param(["*.example.com"], "example.com", False, id="wildcard-not-apex"),
         pytest.param(["/api*"], "/apifoo", False, id="glued-path-star"),
@@ -117,7 +117,7 @@ def _decision(gate, agent_id, agent_keys, patterns, resource, key):
             ["https://api.example.com*"],
             "https://api.example.com.evil.com/x",
             False,
-            id="url-glued-star-lookalike",
+            id="url-glued-star-other",
         ),
         pytest.param(
             ["https://api.example.com*"],
@@ -135,7 +135,7 @@ def _decision(gate, agent_id, agent_keys, patterns, resource, key):
             ["https://api.example.com/*"],
             "https://api.example.com.evil.com/v1",
             False,
-            id="url-path-star-lookalike",
+            id="url-path-star-other",
         ),
         pytest.param(
             ["https://*.example.com/*"],
@@ -147,7 +147,7 @@ def _decision(gate, agent_id, agent_keys, patterns, resource, key):
             ["https://*.example.com/*"],
             "https://example.com.evil.com/v1",
             False,
-            id="url-host-wildcard-suffix",
+            id="url-host-wildcard-other",
         ),
         pytest.param(["acme/*"], "acme/repo", True, id="owner-star"),
         pytest.param(["vendor-api/*"], "vendor-api/credits", True, id="vendor-api-star"),

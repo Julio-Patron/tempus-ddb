@@ -607,9 +607,8 @@ tempus-http-executor \
   degraded summary with **no digest of the full output** (D2-b).
 - The executor sends exactly the URL the policy matched, with no whitespace, control
   characters, backslashes or credentials in it.
-- A timeout, connection reset, disconnect, TLS error, EOF, or HTTP 5xx is recorded
-  as `UNKNOWN` and is not retried. That is decided from the exception type, not from
-  the error text. A validation failure is `FAILED` even if the message contains `500`.
+- An ambiguous transport outcome is recorded as `UNKNOWN` and is not retried.
+  Classification uses the exception type. A validation failure is `FAILED`.
 
 ### 3. Slack Executor (`tempus-slack-executor`)
 Dispatches channel alerts and notifications while isolating `SLACK_BOT_TOKEN`:
@@ -618,7 +617,7 @@ Dispatches channel alerts and notifications while isolating `SLACK_BOT_TOKEN`:
   uppercase letters/digits, e.g. `C0123ABCD`) or a `#channel-name` (lowercase letters, digits,
   `-`, `_`). Slack reads a comma-separated `channel` as several, so `C0123,C9999` is rejected
   (`TEMPUS_SLACK_BINDING_REJECTED`) before anything is sent. Policy patterns match whole
-  components, so `C0123*` matches nothing: put the exact channel in `allowed_resources`.
+  components. Put the exact channel in `allowed_resources`.
 
 ```bash
 tempus-slack-executor \
@@ -651,11 +650,9 @@ tempus-payment-executor \
   for three-decimal ones (BHD, KWD). Express limits per currency with that in mind, or keep
   such currencies out of `allowed_currencies`.
 - `money.beneficiary` must be a non-empty string; it is paid exactly as written.
-- A timeout, reset, disconnect, TLS error, or EOF from the payment transport is
-  recorded as `UNKNOWN`. A definitive provider or validation error is `FAILED`,
-  including one whose message contains `500`. The transport must raise the real
-  exception (or `AmbiguousTransportError`) when it cannot tell whether the payout
-  happened.
+- An ambiguous payment-transport outcome is recorded as `UNKNOWN`. A definitive
+  provider or validation error is `FAILED`. The transport must raise the real
+  exception (or `AmbiguousTransportError`) when the outcome is not known.
 - **This executor is not a complete payment control.** It checks, per intent, the currency,
   the beneficiary pattern and one maximum amount, with the same component patterns as the
   policy; it has no
@@ -905,8 +902,8 @@ A transport failure where the effect may already have happened is no longer a de
 
 | What you had | Result | Fix |
 | --- | --- | --- |
-| An HTTP, payment, or Slack call that timed out, reset, disconnected, failed TLS, hit EOF, or returned HTTP 5xx, previously recorded as `FAILED` | Signed `UNKNOWN`. The permit is not retried. Connection refused stays `FAILED`: the peer never accepted the request | Reconcile the external effect before a new action. Raise `AmbiguousTransportError`, or the real exception type, when the outcome is unknown |
-| Code or a custom adapter that expected `UNKNOWN` because the exception text mentioned a status code or a timeout | A validation error and any other exception stay `FAILED`, even when the message mentions those words. Only the exception type counts, or an HTTP status of 500 or higher stored on the exception | Do not wrap a transport failure in a generic exception. Raise the original error, or `AmbiguousTransportError` |
+| An HTTP, payment, or Slack transport outcome that is ambiguous | Signed `UNKNOWN`. The permit is not retried. Connection refused stays `FAILED` | Reconcile the external effect before a new action. Raise `AmbiguousTransportError`, or the real exception type, when the outcome is unknown |
+| A validation error or any other definitive adapter exception | Stays `FAILED`. Classification uses the exception type | Raise the original error. Raise `AmbiguousTransportError` when the outcome is unknown |
 
 Custom executors do not need to convert their results: the packaged runtime records floats,
 huge integers, `Decimal` and `datetime` as strings, and a result it cannot represent in a

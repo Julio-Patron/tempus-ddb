@@ -792,9 +792,9 @@ def _find_placeholders(node, path="$"):
 def _find_prefix_url_patterns(spec):
     """`http(s)` resource patterns whose `*` is not after a `/`.
 
-    A `*` matches only as a whole component (split on `/` and `.`).
-    `https://api.example.com*` is glued to the host, so it matches nothing.
-    `https://*` is a whole-host wildcard and matches every URL of that scheme.
+    A `*` matches only as a whole component (split on `/` and `.`). A `*` that
+    is not its own component matches nothing. A `*` that is the whole host
+    matches every URL of that scheme.
     """
     constraints = spec.get("constraints") if isinstance(spec, dict) else None
     patterns = constraints.get("allowed_resources") if isinstance(constraints, dict) else []

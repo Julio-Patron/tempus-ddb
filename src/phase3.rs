@@ -727,8 +727,8 @@ fn validate_policy_spec(spec: &Value) -> Result<(), String> {
 
 /// One piece of a pattern or a candidate, split on `.` and `/`.
 ///
-/// A `*` is a wildcard only when it is the whole piece. `host*` and `/api*` are
-/// not wildcards: those patterns match nothing (fail closed).
+/// A `*` is a wildcard only when it is the whole piece. Any other `*` makes
+/// the pattern match nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Piece<'a> {
     Text(&'a str),
@@ -791,9 +791,9 @@ fn pieces_match(pattern: &[Piece<'_>], candidate: &[Piece<'_>]) -> bool {
 ///
 /// When more of the pattern follows, the extra pieces stay inside the wildcard
 /// only while they are joined by the separator that comes right after the `*`
-/// (`*.example.com` can span `a.b` but cannot cross a `/`). A trailing `*`
-/// consumes the rest of the candidate, which must be non-empty, so `/api/*`
-/// covers `/api/foo` and `/api/foo/bar` but not `/api` and not `/apifoo`.
+/// (`*.example.com` can span more than one label but cannot cross a `/`). A
+/// trailing `*` consumes the non-empty remainder. It does not match the text
+/// before the star by itself, and it does not match a different component.
 fn wildcard_matches(rest: &[Piece<'_>], candidate: &[Piece<'_>]) -> bool {
     if rest.is_empty() {
         return !candidate.is_empty();
@@ -828,8 +828,8 @@ fn wildcard_matches(rest: &[Piece<'_>], candidate: &[Piece<'_>]) -> bool {
 /// `true` when `pattern` matches `candidate` on component boundaries.
 ///
 /// `*` alone matches everything. Any other `*` matches only as a whole
-/// component between `.` or `/`. A pattern whose `*` is glued to text matches
-/// nothing, so a too-wide pattern denies instead of allowing a neighbor.
+/// component between `.` or `/`. A pattern whose `*` is not a whole component
+/// matches nothing.
 fn pattern_matches(pattern: &str, candidate: &str) -> bool {
     if pattern == "*" || pattern == candidate {
         return true;
@@ -1577,7 +1577,7 @@ mod tests {
             let matched = matches_patterns(Some(&value), candidate).unwrap();
             assert_eq!(matched, expected, "{pattern} vs {candidate}");
         }
-        // A glued pattern does not poison a list that also has a real component wildcard.
+        // A pattern that does not match does not change another pattern in the list.
         let both = json!(["https://api.example.com*", "https://api.example.com/*"]);
         assert!(matches_patterns(Some(&both), "https://api.example.com/v1").unwrap());
         assert!(!matches_patterns(Some(&both), "https://api.example.com.evil.com/v1").unwrap());

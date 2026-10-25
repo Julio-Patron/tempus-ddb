@@ -36,11 +36,8 @@ def _host_pattern_matches(pattern: str, hostname: str) -> bool:
     """Whether an allowlist entry matches ``hostname``.
 
     An entry is an exact host, ``*`` (every host), or ``*.domain`` (one or more
-    labels before that domain). ``*.example.com`` matches ``a.example.com`` and
-    ``a.b.example.com`` and does not match ``example.com``, ``evilexample.com``,
-    or ``example.com.evil.com``. An exact entry does not include subdomains.
-    ``host*`` and any other wildcard match nothing: a pattern that is not a
-    whole component denies, it does not widen.
+    labels under that domain, not the apex). An exact entry does not include
+    other labels. A ``*`` that is not its own component matches nothing.
     """
     pattern = pattern.lower()
     hostname = hostname.lower()
@@ -124,9 +121,8 @@ def _validate_https_url(
         raise HttpExecutorError(f"Target URL destination refused: {exc}") from exc
 
     if allowed_domains is not None:
-        # Exact host, `*`, or `*.domain`. Not a textual prefix and not "this
-        # host plus every subdomain": `example.com` does not allow
-        # `a.example.com`, and `host*` does not allow `host.evil.com`.
+        # Exact host, `*`, or `*.domain`. A `*` that is not its own component
+        # matches nothing. An exact host does not include other labels.
         if not any(_host_pattern_matches(entry, hostname) for entry in allowed_domains):
             raise HttpExecutorError(
                 f"Target URL host '{hostname}' is not in allowed domains list"
@@ -212,8 +208,7 @@ class HttpActionAdapter:
         else:
             self._allowed_domains = None
         if self._auth_header and not self._allowed_domains:
-            # Fail closed: the header is added to every request, so without an allowlist a
-            # policy of `*` or `https://*` sends the secret to whatever host the intent names.
+            # Fail closed: an Authorization header requires a domain allowlist.
             raise HttpExecutorError(
                 "Refusing to start: an Authorization header is configured without a "
                 "domain allowlist (allowed_domains / --allowed-domains / "

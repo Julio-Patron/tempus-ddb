@@ -1,7 +1,6 @@
-"""Transport failures that may already have had an effect are UNKNOWN.
+"""Ambiguous transport outcomes are UNKNOWN.
 
-Classification uses the exception type. A validation error stays FAILED even
-when its text contains "500", "timeout", or "connection reset".
+Classification uses the exception type. A validation error stays FAILED.
 """
 
 import http.client

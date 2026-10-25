@@ -4,29 +4,10 @@
 
 ### Security: pattern matching now respects component boundaries
 
-Policy patterns and the executor allowlists that mirror them used to treat a trailing
-`*` as a textual prefix. A `*` is now a whole component. `.` and `/` are the
-boundaries. This only turns a previous match into a denial.
-
-- `*` alone still matches everything. An exact string still matches only itself.
-- A `*` after `.` or `/` matches one or more following components, including a leading
-  `*.` label. It does not match the apex name and it does not match a name that merely
-  contains the same text.
-- A `*` glued to text matches nothing. The pattern denies; it does not widen.
-
-The same rules apply to every policy pattern list (`allowed_resources`,
-`allowed_action_types`, `allowed_executors`, `allowed_currencies`,
-`allowed_beneficiaries`) and to the payment executor's own beneficiary allowlist
-(`allowed_beneficiaries` / `PAYMENT_ALLOWED_BENEFICIARIES`). A pattern that is no
-longer a component wildcard authorizes nobody on both sides.
-
-The HTTP executor domain allowlist no longer treats an entry as "this host and any
-subdomain". An entry matches that host only; `*` matches every host; `*.domain`
-matches labels under that domain and not the apex. A glued star matches nothing.
-
-`tempus install-policy` still warns on `http(s)` patterns with no `/` before the star.
-That form is now inert (it authorizes nothing) rather than a prefix, except a star
-that is the whole host, which matches every URL of that scheme.
+Pattern matching now respects component boundaries (`.` and `/`). A `*` matches only
+as a whole component. A pattern that is not in that form matches nothing. This applies
+to policy pattern lists, the payment beneficiary allowlist, and the HTTP domain
+allowlist. The change only turns a previous match into a denial.
 
 Migration notes are in the README section "Common cases that now break, and how to
 fix them". This change is independent of the transport-outcome classification and can
@@ -34,19 +15,10 @@ ship on its own (0.5.4).
 
 ### Security: ambiguous transport outcomes are classified by exception type
 
-The HTTP and payment adapters recorded every transport exception as a signed
-`FAILED` result. The runtime then decided `UNKNOWN` by searching the exception
-text for `500`, `timeout`, `socket`, or `connection reset`. A timeout, reset,
-disconnect, TLS error, or EOF — a failure where the effect may already have
-happened — is now `UNKNOWN` and is not retried. A validation error stays
-`FAILED` even when the message contains `500` or `500.00`.
+An ambiguous transport outcome is recorded as `UNKNOWN` and is not retried. A
+definitive failure, including a validation error, stays `FAILED`. Classification
+uses the exception type. The HTTP, payment, and Slack adapters follow this rule.
 
-The decision uses the exception type (and, for `URLError`, its `reason`, plus an
-HTTP status of 500 or higher stored on the exception). Connection refused stays
-`FAILED`: the peer never accepted the request. The Slack adapter uses the same
-rule. GitHub already recorded these failures as `UNKNOWN`.
-
-A `RuntimeError` whose text mentions `500` or `timeout` is no longer `UNKNOWN`.
 Migration notes are in the README section "Common cases that now break, and how to
 fix them". This change is independent of the pattern-matching change and can ship
 on its own (0.5.5).
@@ -101,10 +73,8 @@ on its own (0.5.5).
   `money.amount is too large`. The parity test also covers these spellings.
 
 ### Security: the HTTP executor fails closed (forge 5)
-- **H1: credentials without an allowlist.** A policy pattern written as a textual prefix
-  also matched neighboring hosts, and an executor with an `Authorization` header but no
-  `allowed_domains` connected there and sent the secret; the README example of
-  `tempus-http-executor` was exactly that configuration.
+- **H1: credentials without an allowlist.** An `Authorization` header requires a domain
+  allowlist. Pattern matching for those entries respects component boundaries.
   Now `HttpActionAdapter` (and therefore `tempus-http-executor`) refuses to start, with a
   clear message and no traceback, when an auth header (argument, `--auth-header` or
   `HTTP_EXECUTOR_AUTH_HEADER`) has no non-empty domain allowlist; `*` is the explicit way to

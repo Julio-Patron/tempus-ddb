@@ -47,7 +47,7 @@ class StubFailingAdapter:
 
 
 class StubAmbiguousAdapter:
-    """Stub adapter that raises a real timeout, not a message that mentions one."""
+    """Stub adapter that raises TimeoutError."""
 
     @property
     def supported_actions(self) -> Set[str]:
@@ -58,7 +58,7 @@ class StubAmbiguousAdapter:
 
 
 class StubValidationAdapter:
-    """Stub adapter whose failure text contains digits that used to look like HTTP 500."""
+    """Stub adapter that raises RuntimeError."""
 
     @property
     def supported_actions(self) -> Set[str]:
@@ -229,7 +229,7 @@ def test_executor_runtime_ambiguous_network_failure():
         assert "UNKNOWN" in str(exc_info.value)
 
 
-def test_validation_error_mentioning_500_is_failed_not_unknown():
+def test_validation_error_is_failed_not_unknown():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         tenant_id = "tenant-runtime"
         gate, gate_id, agent_id, exec_id, exec_db, exec_key, agent_key = (

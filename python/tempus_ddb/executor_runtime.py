@@ -214,8 +214,8 @@ class AmbiguousTransportError(ExecutorRuntimeError):
         self.reason = reason
 
 
-# errno values for a failure after the local stack may already have sent bytes.
-# Connection refused is absent on purpose: the peer never accepted the request.
+# Errno values classified as an ambiguous transport outcome.
+# Connection refused is not included.
 _AMBIGUOUS_ERRNOS = frozenset(
     number
     for number in (
@@ -231,8 +231,8 @@ _AMBIGUOUS_ERRNOS = frozenset(
     if isinstance(number, int)
 )
 
-# Types whose mere presence means the outcome is ambiguous. ConnectionRefusedError
-# is an OSError too, and is intentionally not listed.
+# Exception types classified as an ambiguous transport outcome.
+# ConnectionRefusedError is not included.
 _AMBIGUOUS_TYPES = (
     TimeoutError,
     BrokenPipeError,
@@ -255,12 +255,11 @@ def _http_status(exc: BaseException) -> Optional[int]:
 
 
 def is_ambiguous_transport_error(exc: BaseException) -> bool:
-    """Whether the external effect may already have happened.
+    """Whether a transport outcome is ambiguous.
 
     The decision uses the exception type, an errno on an ``OSError``, or an HTTP
-    status of 500 or higher stored on the exception. ``URLError.reason`` and
-    ``__cause__`` are walked the same way. The message text is never consulted,
-    so a validation error that mentions ``500`` or ``timeout`` is not ambiguous.
+    status stored on the exception. ``URLError.reason`` and ``__cause__`` are
+    walked the same way. The message text is not consulted.
     """
     pending = [exc]
     seen: set[int] = set()
