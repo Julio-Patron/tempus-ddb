@@ -1,6 +1,6 @@
 # Gate B2A para Agente DevOps sobre MCP — Blueprint de arquitectura
 
-*Patrón B2A generalizado a partir de [tempus-ddb](https://github.com/elbuilder77/tempus-ddb), aplicado a un servidor MCP propio con acciones de GitHub PR y alertas de Slack.*
+*Patrón B2A generalizado a partir de [tempus-ddb](https://github.com/Julio-Patron/tempus-ddb), aplicado a un servidor MCP propio con acciones de GitHub PR y alertas de Slack.*
 
 ## Diagrama de flujo
 

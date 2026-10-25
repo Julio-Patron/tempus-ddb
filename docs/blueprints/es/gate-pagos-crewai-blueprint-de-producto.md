@@ -1,6 +1,6 @@
 # Gate de Pagos B2A para CrewAI — Blueprint de producto
 
-*Inspirado en el patrón B2A (Bot-to-Agent) de [tempus-ddb](https://github.com/elbuilder77/tempus-ddb), adaptado a un equipo de agentes CrewAI que paga proveedores vía Stripe.*
+*Inspirado en el patrón B2A (Bot-to-Agent) de [tempus-ddb](https://github.com/Julio-Patron/tempus-ddb), adaptado a un equipo de agentes CrewAI que paga proveedores vía Stripe.*
 
 ## Tagline
 Un peaje criptográfico entre el agente que decide cuánto pagar y el proceso que efectivamente mueve el dinero.
