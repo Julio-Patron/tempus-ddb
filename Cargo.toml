@@ -1,6 +1,6 @@
 [package]
 name = "tempus-ddb"
-version = "0.5.3"
+version = "0.5.4"
 description = "Fail-closed policy gate for AI agent actions: signed policies, single-use permits, receipts"
 license = "MIT"
 repository = "https://github.com/Julio-Patron/tempus-ddb"

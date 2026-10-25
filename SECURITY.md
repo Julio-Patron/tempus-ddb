@@ -37,9 +37,12 @@ approval gate are documented in [docs/RELEASING.md](docs/RELEASING.md).
   processes should use the Vault Transit signer configuration and short-lived workload
   authentication. Signed rotation and revocation are implemented, but operators must
   distribute revocation state before relying on multiple executor instances.
-- The GitHub executor is a single-instance adapter for issue and pull-request creation.
-  Its token must exist only in the executor environment; an agent with the same token can
-  bypass Tempus.
+- The in-tree GitHub executor (`tempus-github-executor`) is a single-instance adapter for
+  issue and pull-request creation. It reads a personal access token from `GITHUB_TOKEN` in
+  the executor environment only; an agent that also holds that token can bypass Tempus. The
+  customer path is [`tempus-github-app`](https://github.com/Julio-Patron/tempus-github-app),
+  which mints short-lived installation tokens and is the executor installed for a
+  design-partner pilot.
 - An executor result of `UNKNOWN` requires manual reconciliation and must never be retried
   automatically.
 - Host permissions, backups, credential isolation, network policy, and downstream service

@@ -25,15 +25,12 @@ No agent action goes out without passing a policy, and if anything fails, it is 
 
 ### ⚡ Quick Install
 ```bash
-git clone https://github.com/Julio-Patron/tempus-ddb.git
-cd tempus-ddb
-pip install -e ".[dev]"      # compiles the Rust extension: needs a Rust toolchain (see Install)
+python -m pip install tempus-ddb     # 0.5.4 ships pre-built wheels: no Rust toolchain needed
 tempus --version
 ```
-> The PyPI release (`pip install tempus-ddb`, 0.5.3) predates default-deny and independent
-> verification: it still seeds an allow-all policy on `tempus init` and has no
-> `verify-receipt`, `export-bundle`, `verify-bundle` or `--allow-all-dev`. The flows in
-> this README need the source install above until a new release is published.
+> `0.5.4` is the first PyPI release with default-deny on `tempus init`, `--allow-all-dev`
+> and independent verification (`verify-receipt`, `export-bundle`, `verify-bundle`). Every
+> flow in this README works with it. To work on the source, see *Install → From Source*.
 
 ### 🚀 [Try the Live Interactive Trace Demo →](https://julio-patron.github.io/tempus-ddb/trace.html)
 *Verify real cryptographic hashes, Ed25519 signatures, and tamper detection directly in your browser.*
@@ -41,7 +38,7 @@ tempus --version
 ---
 </div>
 
-> **Status: beta (`0.5.3` milestone line).** Signed policy, identity lifecycle,
+> **Status: beta (`0.5.4` milestone line).** Signed policy, identity lifecycle,
 > Vault-backed signing, mediated executor runtime (GitHub, HTTP, Slack, Payment),
 > hash-linked event streaming, and signed monotonic checkpoints are implemented.
 > Distributed multi-container gate service is in progress (0.6).
@@ -116,7 +113,7 @@ Inspect how Tempus binds the entire lifecycle (Intent ➔ Authorization ➔ Exec
 
 ---
 
-The `0.5.3` implementation establishes the local permit protocol, signed policy
+The `0.5.4` implementation establishes the local permit protocol, signed policy
 bundles, rotation and revocation, unified mediated `ExecutorRuntime` (GitHub, HTTP/Webhooks, Slack, and Pluggable Payments), Vault Transit signing, single-instance replay protection, and cryptographically signed monotonic checkpoints for verifiable disaster recovery. Read
 [THREAT_MODEL.md](https://github.com/Julio-Patron/tempus-ddb/blob/main/THREAT_MODEL.md) before relying on the current security boundary.
 
@@ -183,19 +180,15 @@ cannot read the executor's environment or key material.
 Python 3.10 or newer is required.
 
 ### 1. From PyPI (Standard & Verified)
-> **Not enough for this README yet.** PyPI 0.5.3 does not include default-deny or
-> independent verification (`verify-receipt`, `export-bundle`, `verify-bundle`,
-> `--allow-all-dev`); use section 3 (from source) to follow the commands below.
-
 Tempus DDB is published to PyPI using **Trusted Publishing (OIDC)** and **Sigstore provenance attestations** on every artifact:
 ```bash
 python -m pip install tempus-ddb
 ```
 
 ### 2. From GitHub Release Wheels & SBOM
-Download the pre-built native wheel matching your platform or the SBOM files from [GitHub Releases v0.5.3](https://github.com/Julio-Patron/tempus-ddb/releases/tag/v0.5.3). Releases cut by the tag workflow attach an SPDX SBOM and CycloneDX SBOMs for Rust and Python. Verify them with the commands in [docs/RELEASING.md](https://github.com/Julio-Patron/tempus-ddb/blob/main/docs/RELEASING.md).
+Download the pre-built native wheel matching your platform or the SBOM files from [GitHub Releases v0.5.4](https://github.com/Julio-Patron/tempus-ddb/releases/tag/v0.5.4). Releases cut by the tag workflow attach an SPDX SBOM and CycloneDX SBOMs for Rust and Python. Verify them with the commands in [docs/RELEASING.md](https://github.com/Julio-Patron/tempus-ddb/blob/main/docs/RELEASING.md).
 ```bash
-pip install ./tempus_ddb-0.5.3-<platform>.whl
+pip install ./tempus_ddb-0.5.4-<platform>.whl
 ```
 
 ### 3. From Source (Development)
@@ -967,9 +960,11 @@ before using Tempus for high-impact production actions.
 
 ## Roadmap
 
-The next release line focuses on large-ledger streaming, durable receipt events,
-independent rollback detection, and operating procedures. See [ROADMAP.md](https://github.com/Julio-Patron/tempus-ddb/blob/main/ROADMAP.md)
-for milestones and explicit exit criteria.
+The 0.5 line, published as design-partner beta `0.5.4`, already includes
+large-ledger streaming, durable receipt events, independent rollback detection,
+and the backup procedure. The next release line is 0.6, a transport-neutral
+gate service, and it is not part of the current offer. See
+[ROADMAP.md](https://github.com/Julio-Patron/tempus-ddb/blob/main/ROADMAP.md) for milestones and explicit exit criteria.
 
 ## Development
 

@@ -344,14 +344,23 @@ def _legacy_section() -> str:
     return readme[start : readme.index("\n## ", start + 1)]
 
 
+def _latest_changelog_section() -> str:
+    """The newest CHANGELOG section with content: Unreleased, or the last release
+    when Unreleased only holds a placeholder."""
+    sections = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").split("\n## [")[1:]
+    for section in sections:
+        body = section.split("]", 1)[1].strip()
+        if body and body.lower() != "nothing yet.":
+            return section
+    raise AssertionError("CHANGELOG.md has no section with content")
+
+
 def test_readme_and_changelog_say_the_legacy_ledger_is_not_verifiable_evidence():
     section = _legacy_section()
     assert "not verifiable evidence" in section
     assert "exact-number" in section
     assert "tempus verify" in section
-    unreleased = (
-        (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").split("\n## [", 2)[1]
-    )
+    unreleased = _latest_changelog_section()
     assert "legacy ledger" in unreleased.lower()
     assert "not verifiable evidence" in unreleased
 
@@ -456,9 +465,7 @@ def test_readme_documents_gate_duplicate_keys_and_the_common_breakages():
         "metadata",
     ):
         assert needle in section, needle
-    unreleased = (
-        (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").split("\n## [", 2)[1]
-    )
+    unreleased = _latest_changelog_section()
     assert "parse_canonical" in unreleased
     assert "Common cases that now break" in unreleased
 

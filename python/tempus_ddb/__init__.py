@@ -26,7 +26,7 @@ Typical usage:
     gate = TempusDDB("tempus.db", "keys.json")
 """
 
-__version__ = "0.5.3"
+__version__ = "0.5.4"
 
 from ._tempus_ddb import (
     TempusDDB,

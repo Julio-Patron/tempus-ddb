@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.5.4] - 2026-10-25
+
+Security hardening of the 0.5 line. Every change below turns a previously accepted
+input into a refusal or a signed denial, except the leading or middle `*` component
+noted under pattern matching. Upgrade notes: README section "Common cases that now
+break, and how to fix them".
+
+Evidence (receipts, traces, bundles) produced by a 0.5.3 gate that used the dev
+allow-all policy embeds that policy's `allowed_currencies: ["*"]` bundle, so
+`verify-receipt`, `verify-trace` and `verify-bundle` report it as `INVALID` after this
+upgrade, and a permit issued before the upgrade under that policy cannot be committed
+(`TEMPUS_AUTHORIZATION_INVALID`). Finish or discard in-flight dev permits before
+upgrading. Policies with exact currency codes are not affected.
+
 ### Security: pattern matching now respects component boundaries
 
 Pattern matching now respects component boundaries (`.` and `/`). A `*` matches only
@@ -25,9 +41,6 @@ uses the exception type. The HTTP, payment, and Slack adapters follow this rule.
 Migration notes are in the README section "Common cases that now break, and how to
 fix them". This change is independent of the pattern-matching change; both ship in
 0.5.4.
-### Security
-- Security hardening; update to 0.5.4.
-
 ### Breaking changes when upgrading from 0.5.3
 - **Currency patterns and wildcards.** `allowed_currencies` accepts only exact 3-letter
   codes. A pattern or a wildcard is rejected when the policy is loaded
