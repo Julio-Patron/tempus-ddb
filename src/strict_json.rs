@@ -91,6 +91,21 @@ pub(crate) fn parse(raw: &str) -> Result<Value, serde_json::Error> {
     Ok(value)
 }
 
+/// Parse `raw` for a gate or executor entry point.
+///
+/// A repeated object key is `DUPLICATE_JSON_KEY` (the same code verifiers use). Other
+/// failures keep the messages of [`parse_error_message`], including `NON_EXACT_NUMBER`
+/// for a number that overflows f64.
+pub(crate) fn parse_labeled(raw: &str, label: &str) -> Result<Value, String> {
+    match parse(raw) {
+        Ok(value) => Ok(value),
+        Err(error) if is_duplicate_key(&error) => Err(format!(
+            "{DUPLICATE_KEY_CODE}: {label} repeats a JSON object key"
+        )),
+        Err(error) => Err(parse_error_message(label, &error)),
+    }
+}
+
 /// Marker present in errors and results for a number that is not an exact integer.
 pub(crate) const NON_EXACT_NUMBER_CODE: &str = "NON_EXACT_NUMBER";
 

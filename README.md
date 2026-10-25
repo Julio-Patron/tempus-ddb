@@ -275,7 +275,8 @@ The same template ships as `config/policy.github.example.json` in the source tre
 
 To try the flow without writing a policy, opt in explicitly. This installs a signed
 policy that **allows every action, resource and executor** for every tenant without its
-own policy. The CLI prints a warning, `tempus doctor` reports `active_policy: FAIL`
+own policy. It does not set `allowed_currencies`, so it does not constrain currency.
+The CLI prints a warning, `tempus doctor` reports `active_policy: FAIL`
 while it is active, and every receipt carries the `tempus.dev-allow-all.v1.*`
 `policy_version`. Never use it in production.
 
@@ -293,11 +294,17 @@ tenant `*` later replaces it; a gate whose active `*` policy is not the dev one 
 
 Upgrading: a database seeded by an older gate still contains `tempus.baseline.v1`.
 It is now ignored (the gate denies). Install a real policy, or opt in with
-`--allow-all-dev` for development.
+`--allow-all-dev` for development. A dev allow-all policy stored with a non-exact
+`allowed_currencies` list fails closed (`TEMPUS_POLICY_INVALID`) and the gate leaves
+that signed row unchanged. Run `tempus install-policy --allow-all-dev` (or
+`TempusDDB.install_allow_all_dev_policy()`) to replace it. Until then it is not allowed.
 
 Policy evaluation is deterministic and rejects unknown constraints, floating-point input,
 oversized input, tenant/resource/action mismatches, excessive TTL, disallowed executors,
-and money metadata outside the configured currency or minor-unit ceiling.
+and money metadata outside the configured currency or minor-unit ceiling. Currency
+allowlists are exact codes (`USD`). Payment actions
+(`finance.disburse`, `finance.transfer`, `payment.charge`) require a `money` object and
+a non-zero amount.
 
 ## End-to-end from the CLI
 
@@ -624,7 +631,9 @@ tempus-slack-executor \
 
 ### 4. Pluggable Financial Adapter (`tempus-payment-executor`)
 Reference pluggable executor that enforces the universal `money` envelope (`amount` or `amount_minor`, `asset` or `currency`, `beneficiary`; fields that disagree are refused) and minor-unit limits with credential isolation:
-- Supported actions: `finance.disburse`, `finance.transfer`, `payment.charge`.
+- Supported actions: `finance.disburse`, `finance.transfer`, `payment.charge`. Each one
+  requires a `money` object and a non-zero amount; a missing, null, or zero amount is
+  refused (`TEMPUS_INVALID_CONTRACT`) and nothing is signed.
 - **Bring Your Own Provider:** Implements a pluggable `PaymentTransport` interface. Shipped with a deterministic mock transport for verification and testing; plug in your real Stripe/Wise API client at the transport boundary without exposing payment keys to the AI agent.
 
 ```bash
@@ -643,8 +652,9 @@ tempus-payment-executor \
   for three-decimal ones (BHD, KWD). Express limits per currency with that in mind, or keep
   such currencies out of `allowed_currencies`.
 - `money.beneficiary` must be a non-empty string; it is paid exactly as written.
+  `allowed_currencies` accepts only exact 3-letter codes.
 - **This executor is not a complete payment control.** It checks, per intent, the currency,
-  the beneficiary pattern and one maximum amount, with textual patterns; it has no
+  the beneficiary pattern and one maximum amount; it has no
   cumulative, daily or velocity limits, no sanctions/KYC checks, no confirmation of the
   provider's settlement, and the shipped transport is a mock. Put the real controls
   (provider-side limits, approvals, reconciliation) at the provider.
@@ -805,14 +815,11 @@ Same exit codes as above (0 VERIFIED, 2 INVALID, 1 usage). Python:
 
 ### What VERIFIED means, and how strict it is
 
-- A document that repeats a JSON object key anywhere (`"amount":"9999.00","amount":"25.00"`)
-  is `INVALID` (`DUPLICATE_JSON_KEY`): parsers disagree on which value wins. This check is
-  made when *verifying* documents. It is **not** made by the gate when it receives an
-  intent, outcome, policy or metadata (`parse_canonical`): there the last value of a repeated
-  key wins, and what is signed holds only that value (through the CLI, Python's `json.loads`
-  already collapses it before the gate sees it). So a repeated key cannot produce an
-  ambiguous signed document, but the gate will not tell the sender that its input was
-  ambiguous; do not generate JSON with repeated keys.
+- A document that repeats a JSON object key anywhere is refused with `DUPLICATE_JSON_KEY`.
+  Verifiers report the document `INVALID`. The gate applies the same rule when it receives an
+  intent, outcome, policy or metadata (`parse_canonical`), and the Rust executor and the
+  Python executor runtime reject a permit that repeats a key before consuming it. Do not
+  generate JSON with repeated keys.
 - Fields outside the schema at the top level of a bundle, in its `trace` or in its
   `checkpoint` wrapper are `INVALID` (`UNKNOWN_FIELD (<path>)`): they would be unsigned
   text travelling inside a verified file.
@@ -876,6 +883,16 @@ for earlier versions can hit `NON_EXACT_NUMBER` (the message names the path, for
 | A float in `input` (`{"price": 19.99}`) | `NON_EXACT_NUMBER ... $.input.price` (it used to produce a signed `BLOCKED`) | A string (`"19.99"`) or an integer in minor units (`1999`) |
 | A decimal in agent `metadata`, a policy or an outcome `output` | `NON_EXACT_NUMBER` at its path | A string (`"0.5"`); policy limits such as `max_money_amount_minor` are already integers |
 | `NaN`, `Infinity`, `1e400` or `-0` from the CLI (`--intent`, `--outcome`, `--policy`, `--metadata`) | `NON_EXACT_NUMBER` (raw text given to the Python/Rust API: `1e400` is `NON_EXACT_NUMBER`; `NaN`/`Infinity` are "must be valid JSON", they are not JSON) | Send a string, or write `0` for `-0` |
+
+Upgrading from 0.5.3, these also break:
+
+| What you send | Result | Fix |
+| --- | --- | --- |
+| A currency pattern or wildcard in `allowed_currencies` | `TEMPUS_POLICY_INVALID`: entries must be exact currency codes. A stored dev allow-all policy with a non-exact list fails the same way and the gate does not rewrite it | Exact codes (`USD`), or omit the list. Replace a stored dev allow-all policy by running `tempus install-policy --allow-all-dev` (or `TempusDDB.install_allow_all_dev_policy()`). Any other such policy is rejected until you install a valid one. |
+| A lowercase currency code | Refused: `money.currency` / `money.asset` must be an exact 3-letter code, and the same rule applies to `allowed_currencies` | An uppercase exact code (`USD`) |
+| A payment action (`finance.disburse`, `finance.transfer`, `payment.charge`) with no `money`, null money, or amount 0 | `TEMPUS_INVALID_CONTRACT` (a money object, or a non-zero amount). Nothing is signed | A `money` object whose amount is greater than zero |
+| JSON with a repeated object key | `DUPLICATE_JSON_KEY` from the gate (`parse_canonical`), the Rust executor and the Python runtime | Emit each object key once |
+| A permit whose only intent was `authorization.intent` | The runtime does not execute that field | Put the intent at the top level of the permit (the verified `intent`) |
 
 Custom executors do not need to convert their results: the packaged runtime records floats,
 huge integers, `Decimal` and `datetime` as strings, and a result it cannot represent in a

@@ -446,7 +446,7 @@ def test_cli_refuses_nan_infinity_overflow_and_negative_zero_as_non_exact(
 
 def test_readme_documents_gate_duplicate_keys_and_the_common_breakages():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "parse_canonical" in readme and "last value of a repeated" in readme
+    assert "parse_canonical" in readme and "DUPLICATE_JSON_KEY" in readme
     start = readme.index("### Common cases that now break, and how to fix them")
     section = readme[start : readme.index("\n## ", start)]
     for needle in (
@@ -463,8 +463,8 @@ def test_readme_documents_gate_duplicate_keys_and_the_common_breakages():
     assert "Common cases that now break" in unreleased
 
 
-def test_gate_keeps_the_last_value_of_a_repeated_key_as_documented():
-    """Pins the documented behaviour: the gate does not reject repeated keys on input."""
+def test_gate_rejects_a_repeated_key():
+    """A repeated object key is ambiguous, so the gate signs nothing."""
     from tempus_ddb import TempusDDB
     from test_independent_verify import TENANT, _pub
 
@@ -479,9 +479,9 @@ def test_gate_keeps_the_last_value_of_a_repeated_key_as_documented():
             '"resource":"vendor/b","requested_at":%d,"input":{},"money":{"amount":"9999.00",'
             '"amount":"25.00","asset":"USD","beneficiary":"v-1"}}'
         ) % (TENANT, _pub(agent_keys), time.time_ns() // 1000)
-        permit = json.loads(db.request_action(raw, str(agent_keys), 30))
-        assert permit["intent"]["resource"] == "vendor/b"
-        assert permit["intent"]["money"]["amount"] == "25.00"
+        with pytest.raises(Exception) as excinfo:
+            db.request_action(raw, str(agent_keys), 30)
+        assert "DUPLICATE_JSON_KEY" in str(excinfo.value)
 
 
 # ----------- D1: conversion code that raises inside the adapter's own objects

@@ -2,10 +2,32 @@
 
 ## [Unreleased]
 
+### Security
+- Security hardening; update to 0.5.4.
+
+### Breaking changes when upgrading from 0.5.3
+- **Currency patterns and wildcards.** `allowed_currencies` accepts only exact 3-letter
+  codes. A pattern or a wildcard is rejected when the policy is loaded
+  (`TEMPUS_POLICY_INVALID`). Omit the list to leave currency unconstrained, or name each
+  code. A stored dev allow-all policy (`tempus.dev-allow-all.v1.*`) whose currency list is
+  not exact codes fails closed with `TEMPUS_POLICY_INVALID`. The gate does not rewrite
+  it. The error says to run `tempus install-policy --allow-all-dev` (or
+  `TempusDDB.install_allow_all_dev_policy()`), which is the only way that stored policy
+  is replaced. Any other policy with a non-exact currency list is also rejected and is
+  not rewritten.
+- **Lowercase currency codes** are rejected. Send an exact uppercase code.
+- **Payment actions** (`finance.disburse`, `finance.transfer`, `payment.charge`) without a
+  `money` object, with null money, or with amount 0 are refused
+  (`TEMPUS_INVALID_CONTRACT`). Nothing is signed.
+- **Duplicate JSON object keys** are refused with `DUPLICATE_JSON_KEY` by the gate
+  (`parse_canonical`), the Rust executor and the Python executor runtime.
+- **Permits that only carried `authorization.intent`.** The executor runtime uses the
+  verified top-level `intent` and does not read `authorization.intent`.
+
 ### Documentation
-- README / CHANGELOG: the duplicate-key check applies to *verified* documents, not to what
-  the gate receives (`parse_canonical`: the last value of a repeated key wins and only it is
-  signed), and a new section "Common cases that now break, and how to fix them" covers
+- README / CHANGELOG: a repeated JSON object key is rejected with `DUPLICATE_JSON_KEY` by
+  verifiers and by the gate (`parse_canonical`), the Rust executor and the Python executor
+  runtime. A section "Common cases that now break, and how to fix them" covers
   `requested_at` from `time.time()`, numeric `money.amount`, floats in `input`, decimals in
   metadata or policies, and `NaN`/`Infinity`/`-0` from the CLI.
 - Legacy ledger (`tempus record` / `tempus verify`, `TEMPUS_LEGACY_TOOLS=1`) is documented

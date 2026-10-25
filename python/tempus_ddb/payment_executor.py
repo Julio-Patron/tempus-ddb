@@ -67,7 +67,25 @@ class MockPaymentTransport:
 # ASCII digits only (`\d` would take any Unicode digit); same grammar as the gate's
 # `parse_minor_units`: a `.` needs one or two digits, and minor units fit in a u64.
 _DECIMAL_AMOUNT = re.compile(r"([0-9]+)(?:\.([0-9]{1,2}))?")
+# Same rule as the gate: an exact 3-letter code.
+_EXACT_CURRENCY = re.compile(r"[A-Z]{3}")
 _U64_MAX = 2**64 - 1
+
+
+def _minor_units(text: str) -> int:
+    """Minor units of a decimal amount string, or PaymentExecutorError."""
+    match = _DECIMAL_AMOUNT.fullmatch(text)
+    if not match:
+        raise PaymentExecutorError(
+            "money.amount must be an unsigned decimal with at most two fractional digits"
+        )
+    whole = match.group(1).lstrip("0") or "0"
+    if len(whole) > 20:  # also keeps int() away from absurdly long digit strings
+        raise PaymentExecutorError("money.amount is too large")
+    minor = int(whole) * 100 + int((match.group(2) or "").ljust(2, "0"))
+    if minor > _U64_MAX:
+        raise PaymentExecutorError("money.amount is too large")
+    return minor
 
 
 def canonical_money(money: Dict[str, Any]) -> Tuple[str, str]:
@@ -84,6 +102,10 @@ def canonical_money(money: Dict[str, Any]) -> Tuple[str, str]:
             value = money[field]
             if not isinstance(value, str) or not value:
                 raise PaymentExecutorError(f"money.{field} must be a non-empty string")
+            if _EXACT_CURRENCY.fullmatch(value) is None:
+                raise PaymentExecutorError(
+                    f"money.{field} must be an exact 3-letter currency code"
+                )
             names[field] = value
     if not names:
         raise PaymentExecutorError("Missing 'asset' (or 'currency') in money")
@@ -103,21 +125,7 @@ def canonical_money(money: Dict[str, Any]) -> Tuple[str, str]:
         or not 0 <= minor <= _U64_MAX
     ):
         raise PaymentExecutorError("money.amount_minor must be an unsigned integer")
-    from_text = None
-    if text is not None:
-        match = _DECIMAL_AMOUNT.fullmatch(text)
-        if not match:
-            raise PaymentExecutorError(
-                "money.amount must be an unsigned decimal with at most two fractional digits"
-            )
-        whole = match.group(1).lstrip("0") or "0"
-        if len(whole) > 20:  # also keeps int() away from absurdly long digit strings
-            raise PaymentExecutorError("money.amount is too large")
-        from_text = int(whole) * 100 + int(
-            (match.group(2) or "").ljust(2, "0")
-        )
-        if from_text > _U64_MAX:
-            raise PaymentExecutorError("money.amount is too large")
+    from_text = _minor_units(text) if text is not None else None
     if from_text is not None and minor is not None and from_text != minor:
         raise PaymentExecutorError(
             f"money.amount ({from_text} minor units) and money.amount_minor ({minor}) disagree"
@@ -174,6 +182,8 @@ class PaymentActionAdapter:
 
         # The same reading the policy evaluated, never a field it skipped.
         amount, asset = canonical_money(money)
+        if _minor_units(amount) == 0:
+            raise PaymentExecutorError("a payment action requires a non-zero amount")
         # Paid exactly as written: never str() of a null/number/list ("None" was paid).
         beneficiary = money.get("beneficiary")
         if not isinstance(beneficiary, str) or not beneficiary:

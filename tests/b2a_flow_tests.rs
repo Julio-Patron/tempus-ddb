@@ -861,6 +861,301 @@ fn allow_all_dev_policy_is_explicit_idempotent_and_replaceable_by_a_real_policy(
         .contains("TEMPUS_DEV_ALLOW_ALL_REFUSED"));
 }
 
+fn canonical_json(value: &Value) -> String {
+    fn write(value: &Value, output: &mut String) {
+        match value {
+            Value::Null => output.push_str("null"),
+            Value::Bool(flag) => output.push_str(if *flag { "true" } else { "false" }),
+            Value::Number(number) => output.push_str(&number.to_string()),
+            Value::String(text) => output.push_str(&serde_json::to_string(text).unwrap()),
+            Value::Array(items) => {
+                output.push('[');
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        output.push(',');
+                    }
+                    write(item, output);
+                }
+                output.push(']');
+            }
+            Value::Object(map) => {
+                output.push('{');
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                for (index, key) in keys.iter().enumerate() {
+                    if index > 0 {
+                        output.push(',');
+                    }
+                    output.push_str(&serde_json::to_string(key).unwrap());
+                    output.push(':');
+                    write(&map[*key], output);
+                }
+                output.push('}');
+            }
+        }
+    }
+    let mut output = String::new();
+    write(value, &mut output);
+    output
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn sign_digest_bytes(keyfile: &Path, digest_hex: &str) -> String {
+    let value: Value = serde_json::from_str(&std::fs::read_to_string(keyfile).unwrap()).unwrap();
+    let seed = hex::decode(value["private_key"].as_str().unwrap()).unwrap();
+    let seed: [u8; 32] = seed.try_into().unwrap();
+    let key = SigningKey::from_bytes(&seed);
+    hex::encode(key.sign(&hex::decode(digest_hex).unwrap()).to_bytes())
+}
+
+/// Rewrite the active dev policy so its currency list is not exact codes, and re-sign it.
+fn store_signed_dev_policy_with_a_non_exact_currency_list(gate: &Gate) -> String {
+    let connection = Connection::open(&gate.db_path).unwrap();
+    let (version, bundle_json, issued_at): (String, String, i64) = connection
+        .query_row(
+            "SELECT policy_version, bundle_json, issued_at FROM policy_bundles
+             WHERE tenant_id = '*' AND retired_at IS NULL",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    let mut bundle: Value = serde_json::from_str(&bundle_json).unwrap();
+    bundle
+        .get_mut("constraints")
+        .unwrap()
+        .as_object_mut()
+        .unwrap()
+        .insert("allowed_currencies".to_string(), json!(["*"]));
+    let mut body = bundle.clone();
+    let object = body.as_object_mut().unwrap();
+    object.remove("policy_digest");
+    object.remove("signature");
+    object.remove("status");
+    object.remove("retired_at");
+    let digest = sha256_hex(canonical_json(&body).as_bytes());
+    let signature = sign_digest_bytes(&gate.gate_keyfile, &digest);
+    bundle["policy_digest"] = json!(digest.clone());
+    bundle["signature"] = json!(signature);
+    let attestation = json!({
+        "schema_version": "tempus.active-policy-attestation.v1",
+        "activated_at": issued_at,
+        "policy_digest": digest.clone(),
+        "policy_version": version.clone(),
+        "signer": bundle["signer"].clone(),
+        "tenant_id": "*",
+    });
+    let attestation_json = canonical_json(&attestation);
+    let attestation_sig =
+        sign_digest_bytes(&gate.gate_keyfile, &sha256_hex(attestation_json.as_bytes()));
+    connection
+        .execute(
+            "UPDATE policy_bundles SET policy_digest = ?1, bundle_json = ?2 WHERE policy_version = ?3",
+            rusqlite::params![digest.clone(), canonical_json(&bundle), version.clone()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE active_policy_attestations
+             SET policy_digest = ?1, signature = ?2, attestation_json = ?3
+             WHERE policy_version = ?4",
+            rusqlite::params![digest.clone(), attestation_sig, attestation_json, version],
+        )
+        .unwrap();
+    digest
+}
+
+fn corrupt_active_bundle_signature(gate: &Gate) {
+    let connection = Connection::open(&gate.db_path).unwrap();
+    let (version, bundle_json): (String, String) = connection
+        .query_row(
+            "SELECT policy_version, bundle_json FROM policy_bundles
+             WHERE tenant_id = '*' AND retired_at IS NULL",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let mut bundle: Value = serde_json::from_str(&bundle_json).unwrap();
+    let signature = bundle["signature"].as_str().unwrap().to_string();
+    let mut chars: Vec<char> = signature.chars().collect();
+    chars[0] = if chars[0] == 'a' { 'b' } else { 'a' };
+    let flipped: String = chars.into_iter().collect();
+    bundle["signature"] = json!(flipped);
+    connection
+        .execute(
+            "UPDATE policy_bundles SET bundle_json = ?1 WHERE policy_version = ?2",
+            rusqlite::params![canonical_json(&bundle), version],
+        )
+        .unwrap();
+}
+
+fn active_currency_list(storage: &SqliteStorage) -> Value {
+    let policies = parse(&storage.list_policies().unwrap());
+    for policy in policies.as_array().unwrap() {
+        if policy["status"] == "ACTIVE" && policy["tenant_id"] == "*" {
+            return policy["constraints"]
+                .get("allowed_currencies")
+                .cloned()
+                .unwrap_or(Value::Null);
+        }
+    }
+    panic!("no active wildcard policy: {policies}");
+}
+
+fn policy_store_snapshot(gate: &Gate) -> String {
+    let connection = Connection::open(&gate.db_path).unwrap();
+    let mut snapshot = String::new();
+    for (label, sql) in [
+        (
+            "bundles",
+            "SELECT policy_version, tenant_id, policy_digest, CAST(issued_at AS TEXT),
+                    CAST(ifnull(retired_at, -1) AS TEXT), bundle_json
+             FROM policy_bundles ORDER BY policy_version",
+        ),
+        (
+            "attestations",
+            "SELECT tenant_id, policy_version, policy_digest, CAST(activated_at AS TEXT),
+                    signer_public_key, signature, attestation_json
+             FROM active_policy_attestations ORDER BY tenant_id, policy_version",
+        ),
+        (
+            "events",
+            "SELECT tenant_id, CAST(sequence_number AS TEXT), event_type, event_digest, event_json
+             FROM event_stream ORDER BY tenant_id, sequence_number",
+        ),
+        (
+            "authorizations",
+            "SELECT action_id, intent_hash, authorization_json
+             FROM action_authorizations ORDER BY action_id",
+        ),
+    ] {
+        snapshot.push_str(label);
+        snapshot.push('\n');
+        let mut statement = connection.prepare(sql).unwrap();
+        let column_count = statement.column_count();
+        let rows = statement
+            .query_map([], |row| {
+                let mut line = String::new();
+                for index in 0..column_count {
+                    if index > 0 {
+                        line.push('|');
+                    }
+                    line.push_str(&row.get::<_, String>(index)?);
+                }
+                Ok(line)
+            })
+            .unwrap();
+        for row in rows {
+            snapshot.push_str(&row.unwrap());
+            snapshot.push('\n');
+        }
+    }
+    snapshot
+}
+
+fn dev_request_error(gate: &Gate, storage: &SqliteStorage, key: &str) -> String {
+    let mut request = parse(&intent(&gate.agent_id, key, "github.com/evil/x"));
+    request["tenant_id"] = json!("acme");
+    request["action_type"] = json!("github.delete_repo");
+    storage
+        .request_action(
+            &request.to_string(),
+            gate.agent_keyfile.to_str().unwrap(),
+            60,
+        )
+        .unwrap_err()
+}
+
+fn assert_stale_dev_currency_error(error: &str) {
+    assert!(error.contains("TEMPUS_POLICY_INVALID"), "{error}");
+    assert!(error.contains("install-policy --allow-all-dev"), "{error}");
+    assert!(
+        error.contains("TempusDDB.install_allow_all_dev_policy"),
+        "{error}"
+    );
+    assert!(error.contains("not allowed"), "{error}");
+}
+
+#[test]
+fn stale_dev_allow_all_with_a_non_exact_currency_list_fails_closed() {
+    let (gate, storage) = Gate::new();
+    let original = parse(&storage.install_allow_all_dev_policy().unwrap());
+    drop(storage);
+    let stale_digest = store_signed_dev_policy_with_a_non_exact_currency_list(&gate);
+    assert_ne!(original["policy_digest"].as_str().unwrap(), stale_digest);
+    let before = policy_store_snapshot(&gate);
+    let storage = gate.open();
+    assert_eq!(active_currency_list(&storage), json!(["*"]));
+
+    // Loading the signed policy does not rewrite it and does not allow the action.
+    let error = dev_request_error(&gate, &storage, "stale-load");
+    assert_stale_dev_currency_error(&error);
+    drop(storage);
+    assert_eq!(policy_store_snapshot(&gate), before);
+    let storage = gate.open();
+    assert_eq!(active_currency_list(&storage), json!(["*"]));
+    let error_again = dev_request_error(&gate, &storage, "stale-load-2");
+    assert_stale_dev_currency_error(&error_again);
+    drop(storage);
+    assert_eq!(policy_store_snapshot(&gate), before);
+
+    // The operator command is what replaces the stored policy.
+    let storage = gate.open();
+    let replaced = parse(&storage.install_allow_all_dev_policy().unwrap());
+    let again = parse(&storage.install_allow_all_dev_policy().unwrap());
+    assert_eq!(replaced["policy_digest"], again["policy_digest"]);
+    assert_ne!(replaced["policy_digest"].as_str().unwrap(), stale_digest);
+    assert!(replaced["constraints"].get("allowed_currencies").is_none());
+    assert!(replaced["policy_version"]
+        .as_str()
+        .unwrap()
+        .starts_with("tempus.dev-allow-all.v1"));
+    let allowed = gate.request(&storage, "stale-repaired", "acme");
+    assert_eq!(allowed["authorization"]["decision"], "ALLOWED");
+    assert!(allowed["policy_bundle"]["constraints"]
+        .get("allowed_currencies")
+        .is_none());
+    assert_eq!(
+        allowed["policy_bundle"]["policy_digest"],
+        replaced["policy_digest"]
+    );
+
+    // A stored dev policy whose signature does not verify is also left unchanged.
+    let (gate_bad, storage_bad) = Gate::new();
+    storage_bad.install_allow_all_dev_policy().unwrap();
+    drop(storage_bad);
+    store_signed_dev_policy_with_a_non_exact_currency_list(&gate_bad);
+    corrupt_active_bundle_signature(&gate_bad);
+    let before_bad = policy_store_snapshot(&gate_bad);
+    let storage_bad = gate_bad.open();
+    let error = dev_request_error(&gate_bad, &storage_bad, "stale-bad");
+    assert_stale_dev_currency_error(&error);
+    drop(storage_bad);
+    assert_eq!(policy_store_snapshot(&gate_bad), before_bad);
+
+    // A non-dev policy with a non-exact currency list is rejected and nothing is allowed by default.
+    let (gate_real, storage_real) = Gate::new();
+    let spec = json!({
+        "schema_version": "tempus.policy-bundle.v1",
+        "policy_version": "real-wildcard-currency",
+        "tenant_id": "*",
+        "constraints": {
+            "allowed_action_types": ["*"],
+            "allowed_resources": ["*"],
+            "allowed_executors": ["*"],
+            "max_ttl_seconds": 60,
+            "max_input_bytes": 1024,
+            "allowed_currencies": ["*"]
+        }
+    });
+    let rejected = storage_real.install_policy(&spec.to_string()).unwrap_err();
+    assert!(rejected.contains("TEMPUS_POLICY_INVALID"), "{rejected}");
+    assert!(rejected.contains("exact currency codes"), "{rejected}");
+    assert_not_installed(&gate_real.request(&storage_real, "wild-real", "acme"));
+}
+
 #[test]
 fn test_copy_pyd_binary() {
     let candidates = [

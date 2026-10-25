@@ -75,7 +75,6 @@ class AdapterConformanceHarness:
                         "allowed_executors": [exec_id],
                         "max_ttl_seconds": 86400,
                         "max_input_bytes": 65536,
-                        "allowed_currencies": ["*"],
                     },
                 }
             )
