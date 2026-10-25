@@ -83,9 +83,11 @@ jobs:
       # pip-audit, so the tool's own dependencies and packages preinstalled
       # on the runner are not part of the result.
       - name: Run pip-audit
+        shell: bash
         run: |
           python -m uv --quiet export --frozen --extra dev --no-emit-project --no-header --no-annotate --prune pip-audit -o requirements-audit.txt
-          python -m uv tool run --python python pip-audit --disable-pip -r requirements-audit.txt
+          # `python/` is a project directory, so pass the interpreter path explicitly.
+          python -m uv tool run --python "$(python -c 'import sys; print(sys.executable)')" pip-audit --disable-pip -r requirements-audit.txt
           python -c "import pathlib; pathlib.Path('requirements-audit.txt').unlink(missing_ok=True)"
 
       - name: Run Ruff
