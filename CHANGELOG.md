@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+### Security: policy patterns and the HTTP allowlist match on component boundaries
+
+`matches_patterns` treated a trailing `*` as a textual prefix, so
+`https://api.example.com*` also matched `https://api.example.com.evil.com/...` and
+`/api*` matched `/apifoo`. A `*` is now a whole component. `.` and `/` are the
+boundaries:
+
+- `*` alone still matches everything. An exact string still matches only itself.
+- `*.example.com` matches a subdomain (`a.example.com`, `a.b.example.com`) and does
+  not match `example.com`, `evilexample.com`, or `example.com.evil.com`.
+- A trailing `*` after `/` or `.` matches one or more following components
+  (`https://api.example.com/*`, `acme/*`, `/api/*`, `http.*`).
+- A `*` glued to text (`host*`, `/api*`, `https://api.example.com*`, `vendor-*`,
+  `USD*`) matches nothing. The pattern denies; it does not widen to a neighbor.
+
+The same rules apply to every policy pattern list (`allowed_resources`,
+`allowed_action_types`, `allowed_executors`, `allowed_currencies`,
+`allowed_beneficiaries`).
+
+The HTTP executor domain allowlist no longer treats an entry as "this host and any
+subdomain". An entry matches that host only; `*` matches every host; `*.example.com`
+matches subdomains of `example.com` but not the apex and not a name that merely
+contains that text. `host*` matches nothing.
+
+`tempus install-policy` still warns on `http(s)://...*` with no `/` before the star.
+That form is now inert (it authorizes nothing) rather than a prefix, except a star
+that is the whole host (`https://*`), which matches every URL of that scheme.
+
+The payment executor's own beneficiary allowlist is unchanged and still uses a
+textual prefix (`vendor-*` matches `vendor-42`). A policy `allowed_beneficiaries`
+entry uses the component rules, so `vendor-*` in a policy matches nothing.
+
+This only turns a previous match into a denial. It is independent of the
+transport-outcome classification and can ship on its own (0.5.4).
+
 ### Documentation
 - README / CHANGELOG: the duplicate-key check applies to *verified* documents, not to what
   the gate receives (`parse_canonical`: the last value of a repeated key wins and only it is

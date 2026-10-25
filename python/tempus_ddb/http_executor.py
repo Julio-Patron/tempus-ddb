@@ -31,6 +31,30 @@ class HttpAPIError(HttpExecutorError):
         self.status_code = status_code
 
 
+def _host_pattern_matches(pattern: str, hostname: str) -> bool:
+    """Whether an allowlist entry matches ``hostname``.
+
+    An entry is an exact host, ``*`` (every host), or ``*.domain`` (one or more
+    labels before that domain). ``*.example.com`` matches ``a.example.com`` and
+    ``a.b.example.com`` and does not match ``example.com``, ``evilexample.com``,
+    or ``example.com.evil.com``. An exact entry does not include subdomains.
+    ``host*`` and any other wildcard match nothing: a pattern that is not a
+    whole component denies, it does not widen.
+    """
+    pattern = pattern.lower()
+    hostname = hostname.lower()
+    if pattern == "*":
+        return True
+    if "*" not in pattern:
+        return pattern == hostname
+    if pattern.count("*") == 1 and pattern.startswith("*."):
+        suffix = pattern[2:]
+        if suffix and not suffix.startswith(".") and not suffix.endswith("."):
+            dotted = "." + suffix
+            return hostname.endswith(dotted) and len(hostname) > len(dotted)
+    return False
+
+
 def _reject_dot_segments(path: str) -> None:
     """Refuse `.` and `..` path segments, however they are spelled.
 
@@ -99,13 +123,10 @@ def _validate_https_url(
         raise HttpExecutorError(f"Target URL destination refused: {exc}") from exc
 
     if allowed_domains is not None:
-        matched = any(
-            hostname == d
-            or hostname.endswith("." + d)
-            or d == "*"
-            for d in allowed_domains
-        )
-        if not matched:
+        # Exact host, `*`, or `*.domain`. Not a textual prefix and not "this
+        # host plus every subdomain": `example.com` does not allow
+        # `a.example.com`, and `host*` does not allow `host.evil.com`.
+        if not any(_host_pattern_matches(entry, hostname) for entry in allowed_domains):
             raise HttpExecutorError(
                 f"Target URL host '{hostname}' is not in allowed domains list"
             )

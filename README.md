@@ -570,15 +570,22 @@ tempus-http-executor \
 - **Credentials need an allowlist.** The `Authorization` header is added to every request,
   so the executor refuses to start with `--auth-header` (or `HTTP_EXECUTOR_AUTH_HEADER`)
   unless `--allowed-domains` / `allowed_domains` / `HTTP_EXECUTOR_ALLOWED_DOMAINS` names the
-  hosts that may receive it (`*` accepts every host, explicitly). A host matches if it equals
-  an entry or is a subdomain of it.
-- **Write URL patterns in the policy with the slash after the host.** `allowed_resources`
-  patterns are plain prefixes: `https://api.example.com*` also matches
-  `https://api.example.com.evil.net/` and `https://api.example.com:8443/`. Use
-  `https://api.example.com/*` (or `/v1/*`). `tempus install-policy` prints a WARNING for
-  `http(s)://host*` patterns without that slash.
-- **Ports are not restricted** by the policy prefix nor by the allowlist (`:8443` on an
-  allowed host is allowed). Pin the port in the policy pattern if it matters.
+  hosts that may receive it (`*` accepts every host, explicitly). An entry matches that host
+  only, or, when written `*.example.com`, one or more labels under that domain
+  (`a.example.com`, `a.b.example.com`; not the apex `example.com`, not `evilexample.com`,
+  not `example.com.evil.com`). `example.com` does not include its subdomains. `host*` matches
+  nothing.
+- **Policy patterns match whole components.** `allowed_resources`, `allowed_action_types`,
+  `allowed_executors`, `allowed_currencies` and `allowed_beneficiaries` split on `/` and `.`.
+  A `*` matches only as a whole component: `https://api.example.com/*` matches
+  `https://api.example.com/v1/users` (and deeper paths); `acme/*` matches `acme/repo`;
+  `*.example.com` matches a subdomain. `https://api.example.com*`, `host*` and `/api*` match
+  nothing (the `*` is glued to the text), and `/api/*` does not match `/apifoo`.
+  `tempus install-policy` prints a WARNING for `http(s)` patterns with no `/` before the `*`.
+- **Ports are not restricted by the allowlist** (`:8443` on an allowed host is still allowed).
+  A policy pattern matches the URL text, so a pattern without the port does not match a URL
+  that includes one. Pin the port in the pattern when it matters
+  (`https://api.example.com:8443/*`).
 - **No `.`/`..` path segments**, plain or percent-encoded (`%2e%2e`, `%252e%252e`, `..%2f`),
   and no backslashes: the policy matches the URL *text*, so `/v1/../admin` would pass
   `https://api.example.com/v1/*` while the server serves `/admin`.
@@ -609,8 +616,8 @@ Dispatches channel alerts and notifications while isolating `SLACK_BOT_TOKEN`:
 - The permit `resource` is the channel and must be **exactly one**: an ID (`C`, `G` or `D` +
   uppercase letters/digits, e.g. `C0123ABCD`) or a `#channel-name` (lowercase letters, digits,
   `-`, `_`). Slack reads a comma-separated `channel` as several, so `C0123,C9999` is rejected
-  (`TEMPUS_SLACK_BINDING_REJECTED`) before anything is sent. Policy patterns such as `C0123*`
-  are textual prefixes: prefer exact channels in `allowed_resources`.
+  (`TEMPUS_SLACK_BINDING_REJECTED`) before anything is sent. Policy patterns match whole
+  components, so `C0123*` matches nothing: put the exact channel in `allowed_resources`.
 
 ```bash
 tempus-slack-executor \

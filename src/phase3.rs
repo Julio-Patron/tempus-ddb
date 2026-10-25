@@ -725,14 +725,128 @@ fn validate_policy_spec(spec: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// One piece of a pattern or a candidate, split on `.` and `/`.
+///
+/// A `*` is a wildcard only when it is the whole piece. `host*` and `/api*` are
+/// not wildcards: those patterns match nothing (fail closed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Piece<'a> {
+    Text(&'a str),
+    Sep(u8),
+    Wild,
+}
+
+/// Split `input` on `.` and `/`. With `wildcards`, a piece that is exactly `*`
+/// becomes [`Piece::Wild`]; a piece that merely contains `*` is rejected.
+fn component_pieces<'a>(input: &'a str, wildcards: bool) -> Option<Vec<Piece<'a>>> {
+    let mut pieces = Vec::new();
+    let mut start = 0usize;
+    for (index, byte) in input.bytes().enumerate() {
+        if byte == b'.' || byte == b'/' {
+            if start < index && !push_piece(&mut pieces, &input[start..index], wildcards) {
+                return None;
+            }
+            pieces.push(Piece::Sep(byte));
+            start = index + 1;
+        }
+    }
+    if start < input.len() && !push_piece(&mut pieces, &input[start..], wildcards) {
+        return None;
+    }
+    Some(pieces)
+}
+
+fn push_piece<'a>(pieces: &mut Vec<Piece<'a>>, text: &'a str, wildcards: bool) -> bool {
+    if wildcards && text.contains('*') {
+        if text != "*" {
+            return false;
+        }
+        pieces.push(Piece::Wild);
+    } else {
+        pieces.push(Piece::Text(text));
+    }
+    true
+}
+
+fn pieces_match(pattern: &[Piece<'_>], candidate: &[Piece<'_>]) -> bool {
+    match pattern {
+        [] => candidate.is_empty(),
+        [Piece::Wild, rest @ ..] => wildcard_matches(rest, candidate),
+        [Piece::Sep(separator), rest @ ..] => match candidate {
+            [Piece::Sep(candidate_separator), tail @ ..] if candidate_separator == separator => {
+                pieces_match(rest, tail)
+            }
+            _ => false,
+        },
+        [Piece::Text(text), rest @ ..] => match candidate {
+            [Piece::Text(candidate_text), tail @ ..] if candidate_text == text => {
+                pieces_match(rest, tail)
+            }
+            _ => false,
+        },
+    }
+}
+
+/// A whole-component `*` consumes one or more pieces.
+///
+/// When more of the pattern follows, the extra pieces stay inside the wildcard
+/// only while they are joined by the separator that comes right after the `*`
+/// (`*.example.com` can span `a.b` but cannot cross a `/`). A trailing `*`
+/// consumes the rest of the candidate, which must be non-empty, so `/api/*`
+/// covers `/api/foo` and `/api/foo/bar` but not `/api` and not `/apifoo`.
+fn wildcard_matches(rest: &[Piece<'_>], candidate: &[Piece<'_>]) -> bool {
+    if rest.is_empty() {
+        return !candidate.is_empty();
+    }
+    let bound = match rest {
+        [Piece::Sep(separator), ..] => Some(*separator),
+        _ => None,
+    };
+    let mut index = 0usize;
+    let mut texts = 0usize;
+    while index < candidate.len() {
+        match candidate[index] {
+            Piece::Text(_) => {
+                texts += 1;
+                index += 1;
+                if pieces_match(rest, &candidate[index..]) {
+                    return true;
+                }
+            }
+            Piece::Sep(separator) => {
+                if texts == 0 || bound != Some(separator) {
+                    return false;
+                }
+                index += 1;
+            }
+            Piece::Wild => return false,
+        }
+    }
+    false
+}
+
+/// `true` when `pattern` matches `candidate` on component boundaries.
+///
+/// `*` alone matches everything. Any other `*` matches only as a whole
+/// component between `.` or `/`. A pattern whose `*` is glued to text matches
+/// nothing, so a too-wide pattern denies instead of allowing a neighbor.
+fn pattern_matches(pattern: &str, candidate: &str) -> bool {
+    if pattern == "*" || pattern == candidate {
+        return true;
+    }
+    let Some(pattern_pieces) = component_pieces(pattern, true) else {
+        return false;
+    };
+    let Some(candidate_pieces) = component_pieces(candidate, false) else {
+        return false;
+    };
+    pieces_match(&pattern_pieces, &candidate_pieces)
+}
+
 fn matches_patterns(value: Option<&Value>, candidate: &str) -> Result<bool, String> {
-    Ok(pattern_list(value, "pattern list")?.iter().any(|pattern| {
-        *pattern == "*"
-            || *pattern == candidate
-            || pattern
-                .strip_suffix('*')
-                .is_some_and(|prefix| candidate.starts_with(prefix))
-    }))
+    Ok(pattern_list(value, "pattern list")?
+        .iter()
+        .any(|pattern| pattern_matches(pattern, candidate)))
 }
 
 fn pattern_list<'a>(value: Option<&'a Value>, field: &str) -> Result<Vec<&'a str>, String> {
@@ -1382,5 +1496,90 @@ mod tests {
             .unwrap();
         let _ = std::fs::remove_file(path);
         assert!(error.contains("TEMPUS_SIGNER_PROVIDER_UNKNOWN"));
+    }
+
+    #[test]
+    fn patterns_match_whole_components_and_reject_glued_stars() {
+        let cases = [
+            ("*", "anything", true),
+            ("*", "https://api.example.com.evil.com/x", true),
+            ("acme/repo", "acme/repo", true),
+            ("acme/repo", "acme/other", false),
+            ("acme/*", "acme/repo", true),
+            ("acme/*", "acme/repo/extra", true),
+            ("vendor-api/*", "vendor-api/credits", true),
+            ("vendor-api/*", "vendor-apifoo", false),
+            (
+                "https://api.example.com/*",
+                "https://api.example.com/v1/users",
+                true,
+            ),
+            (
+                "https://api.example.com/*",
+                "https://api.example.com/v1/users/1",
+                true,
+            ),
+            (
+                "https://api.example.com/*",
+                "https://api.example.com.evil.com/v1",
+                false,
+            ),
+            (
+                "https://api.example.com*",
+                "https://api.example.com.evil.com/x",
+                false,
+            ),
+            (
+                "https://api.example.com*",
+                "https://api.example.com/x",
+                false,
+            ),
+            ("https://api.example.com*", "https://api.example.com", false),
+            ("https://*.example.com/*", "https://a.example.com/v1", true),
+            (
+                "https://*.example.com/*",
+                "https://a.b.example.com/v1/x",
+                true,
+            ),
+            (
+                "https://*.example.com/*",
+                "https://evilexample.com/v1",
+                false,
+            ),
+            (
+                "https://*.example.com/*",
+                "https://example.com.evil.com/v1",
+                false,
+            ),
+            ("host*", "host.evil.com", false),
+            ("host*", "host", false),
+            ("host*", "hostile", false),
+            ("*.example.com", "a.example.com", true),
+            ("*.example.com", "a.b.example.com", true),
+            ("*.example.com", "evilexample.com", false),
+            ("*.example.com", "example.com.evil.com", false),
+            ("*.example.com", "example.com", false),
+            ("/api*", "/apifoo", false),
+            ("/api*", "/api/foo", false),
+            ("/api/*", "/apifoo", false),
+            ("/api/*", "/api/foo", true),
+            ("/api/*", "/api/foo/bar", true),
+            ("/api/*", "/api", false),
+            ("http.post", "http.post", true),
+            ("http.*", "http.post", true),
+            ("http*", "http.post", false),
+            ("vendor-*", "vendor-42", false),
+            ("USD", "USD", true),
+            ("USD*", "USDC", false),
+        ];
+        for (pattern, candidate, expected) in cases {
+            let value = json!([pattern]);
+            let matched = matches_patterns(Some(&value), candidate).unwrap();
+            assert_eq!(matched, expected, "{pattern} vs {candidate}");
+        }
+        // A glued pattern does not poison a list that also has a real component wildcard.
+        let both = json!(["https://api.example.com*", "https://api.example.com/*"]);
+        assert!(matches_patterns(Some(&both), "https://api.example.com/v1").unwrap());
+        assert!(!matches_patterns(Some(&both), "https://api.example.com.evil.com/v1").unwrap());
     }
 }
