@@ -69,7 +69,7 @@ Specific mediated executors (GitHub, HTTP, Slack, Payment, and future third-part
   1. Valid unconsumed permit ➔ atomic consumption + valid signed receipt.
   2. Expired permit ➔ rejection without calling the adapter handler.
   3. Replay / already-consumed permit ➔ rejection with `ERR_PERMIT_ALREADY_CONSUMED`.
-  4. Network timeout / unhandled exception ➔ transition to signed `UNKNOWN` observation (never retried).
+  4. Ambiguous transport failure (timeout, reset, disconnect, TLS, EOF, HTTP 5xx) ➔ signed `UNKNOWN` observation (never retried). Any other exception, including a validation error, ➔ signed `FAILED`. Classification is by exception type, not by the message text.
   5. Deterministic crash recovery on restarted runtime instances.
 
 ### Modules Tested & Prior Art

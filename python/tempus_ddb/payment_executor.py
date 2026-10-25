@@ -13,8 +13,10 @@ import re
 from typing import Any, Dict, Optional, Protocol, Set, Tuple
 
 from .executor_runtime import (
+    AmbiguousTransportError,
     ExecutionResult,
     ExecutorRuntime,
+    is_ambiguous_transport_error,
 )
 
 
@@ -200,7 +202,13 @@ class PaymentActionAdapter:
                 self._secret_key, amount, asset, beneficiary, input_data
             )
             return ExecutionResult(status="SUCCEEDED", payload=payout_result)
+        except AmbiguousTransportError:
+            raise
         except Exception as exc:
+            if is_ambiguous_transport_error(exc):
+                raise AmbiguousTransportError(
+                    f"PAYMENT_TRANSPORT_AMBIGUOUS: {type(exc).__name__}"
+                ) from exc
             return ExecutionResult(status="FAILED", payload={"error": str(exc)})
 
 

@@ -9,8 +9,11 @@ unknown outcome instead of retrying.
 import argparse
 import datetime
 import decimal
+import errno
+import http.client
 import json
 import reprlib
+import ssl
 import sys
 from typing import Any, Dict, NamedTuple, Optional, Protocol, Set
 
@@ -171,8 +174,10 @@ def sanitize_output(payload: Any) -> str:
     own objects raising in `__repr__` / `__str__` / `isoformat` / `items`, ...) never turns
     into a recorded FAILED: the outcome keeps the adapter's own status and carries a marker
     with a bounded `repr` instead. An exception *raised by the adapter* is a different
-    case: the runtime cannot know whether the effect happened, so it records FAILED (or
-    UNKNOWN for ambiguous transport errors).
+    case: a validation failure or other definitive error is recorded FAILED. A
+    transport failure where the effect may already have happened (timeout, reset,
+    disconnect, TLS, EOF, HTTP 5xx) is recorded UNKNOWN. That choice uses the
+    exception type, not the text of the message.
     """
     try:
         return json.dumps(exact_json(payload))
@@ -207,6 +212,80 @@ class AmbiguousTransportError(ExecutorRuntimeError):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
+
+
+# errno values for a failure after the local stack may already have sent bytes.
+# Connection refused is absent on purpose: the peer never accepted the request.
+_AMBIGUOUS_ERRNOS = frozenset(
+    number
+    for number in (
+        errno.ETIMEDOUT,
+        errno.ECONNRESET,
+        errno.EPIPE,
+        errno.ECONNABORTED,
+        getattr(errno, "ENETRESET", None),
+        getattr(errno, "WSAETIMEDOUT", None),
+        getattr(errno, "WSAECONNRESET", None),
+        getattr(errno, "WSAECONNABORTED", None),
+    )
+    if isinstance(number, int)
+)
+
+# Types whose mere presence means the outcome is ambiguous. ConnectionRefusedError
+# is an OSError too, and is intentionally not listed.
+_AMBIGUOUS_TYPES = (
+    TimeoutError,
+    BrokenPipeError,
+    ConnectionAbortedError,
+    ConnectionResetError,  # http.client.RemoteDisconnected is one of these
+    ssl.SSLError,
+    EOFError,
+    http.client.IncompleteRead,
+    http.client.BadStatusLine,
+    http.client.RemoteDisconnected,
+)
+
+
+def _http_status(exc: BaseException) -> Optional[int]:
+    for name in ("status_code", "code", "status"):
+        value = getattr(exc, name, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def is_ambiguous_transport_error(exc: BaseException) -> bool:
+    """Whether the external effect may already have happened.
+
+    The decision uses the exception type, an errno on an ``OSError``, or an HTTP
+    status of 500 or higher stored on the exception. ``URLError.reason`` and
+    ``__cause__`` are walked the same way. The message text is never consulted,
+    so a validation error that mentions ``500`` or ``timeout`` is not ambiguous.
+    """
+    pending = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        status = _http_status(current)
+        number = getattr(current, "errno", None)
+        if isinstance(current, ConnectionRefusedError):
+            pass
+        elif isinstance(current, _AMBIGUOUS_TYPES) or (
+            isinstance(number, int) and number in _AMBIGUOUS_ERRNOS
+        ):
+            return True
+        elif status is not None and status >= 500:
+            return True
+        reason = getattr(current, "reason", None)
+        if isinstance(reason, BaseException):
+            pending.append(reason)
+        cause = current.__cause__
+        if isinstance(cause, BaseException):
+            pending.append(cause)
+    return False
 
 
 class ExecutionResult(NamedTuple):
@@ -312,17 +391,10 @@ class ExecutorRuntime:
         except UnknownExecutionError:
             raise
         except Exception as exc:
-            err_msg = str(exc)
-            # Check if this was a fatal network ambiguity
-            if (
-                "500" in err_msg
-                or "timeout" in err_msg.lower()
-                or "socket" in err_msg.lower()
-                or "connection reset" in err_msg.lower()
-            ):
+            if is_ambiguous_transport_error(exc):
                 observation = self._executor.mark_unknown(
                     auth_id,
-                    f"TRANSPORT_AMBIGUOUS: {exc.__class__.__name__}",
+                    f"TRANSPORT_AMBIGUOUS: {type(exc).__name__}",
                 )
                 raise UnknownExecutionError(observation) from exc
 
@@ -330,7 +402,9 @@ class ExecutorRuntime:
                 auth_id,
                 action_id,
                 "FAILED",
-                json.dumps({"error_code": "EXECUTION_EXCEPTION", "message": err_msg}),
+                json.dumps(
+                    {"error_code": "EXECUTION_EXCEPTION", "message": str(exc)}
+                ),
             )
 
     @classmethod

@@ -37,6 +37,24 @@ entry uses the component rules, so `vendor-*` in a policy matches nothing.
 This only turns a previous match into a denial. It is independent of the
 transport-outcome classification and can ship on its own (0.5.4).
 
+### Security: ambiguous transport outcomes are classified by exception type
+
+The HTTP and payment adapters recorded every transport exception as a signed
+`FAILED` result. The runtime then decided `UNKNOWN` by searching the exception
+text for `500`, `timeout`, `socket`, or `connection reset`. A timeout, reset,
+disconnect, TLS error, or EOF — a failure where the effect may already have
+happened — is now `UNKNOWN` and is not retried. A validation error stays
+`FAILED` even when the message contains `500` or `500.00`.
+
+The decision uses the exception type (and, for `URLError`, its `reason`, plus an
+HTTP status of 500 or higher stored on the exception). Connection refused stays
+`FAILED`: the peer never accepted the request. The Slack adapter uses the same
+rule. GitHub already recorded these failures as `UNKNOWN`.
+
+A `RuntimeError` whose text mentions `500` or `timeout` is no longer `UNKNOWN`.
+This change is independent of the pattern-matching change and can ship on its
+own (0.5.5).
+
 ### Documentation
 - README / CHANGELOG: the duplicate-key check applies to *verified* documents, not to what
   the gate receives (`parse_canonical`: the last value of a repeated key wins and only it is

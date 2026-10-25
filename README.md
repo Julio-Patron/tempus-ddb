@@ -609,6 +609,9 @@ tempus-http-executor \
   degraded summary with **no digest of the full output** (D2-b).
 - The executor sends exactly the URL the policy matched, with no whitespace, control
   characters, backslashes or credentials in it.
+- A timeout, connection reset, disconnect, TLS error, EOF, or HTTP 5xx is recorded
+  as `UNKNOWN` and is not retried. That is decided from the exception type, not from
+  the error text. A validation failure is `FAILED` even if the message contains `500`.
 
 ### 3. Slack Executor (`tempus-slack-executor`)
 Dispatches channel alerts and notifications while isolating `SLACK_BOT_TOKEN`:
@@ -650,6 +653,11 @@ tempus-payment-executor \
   for three-decimal ones (BHD, KWD). Express limits per currency with that in mind, or keep
   such currencies out of `allowed_currencies`.
 - `money.beneficiary` must be a non-empty string; it is paid exactly as written.
+- A timeout, reset, disconnect, TLS error, or EOF from the payment transport is
+  recorded as `UNKNOWN`. A definitive provider or validation error is `FAILED`,
+  including one whose message contains `500`. The transport must raise the real
+  exception (or `AmbiguousTransportError`) when it cannot tell whether the payout
+  happened.
 - **This executor is not a complete payment control.** It checks, per intent, the currency,
   the beneficiary pattern and one maximum amount, with textual patterns; it has no
   cumulative, daily or velocity limits, no sanctions/KYC checks, no confirmation of the

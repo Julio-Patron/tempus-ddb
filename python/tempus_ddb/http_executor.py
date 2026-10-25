@@ -16,6 +16,7 @@ from .executor_runtime import (
     AmbiguousTransportError,
     ExecutionResult,
     ExecutorRuntime,
+    is_ambiguous_transport_error,
 )
 
 
@@ -177,7 +178,13 @@ class UrllibHttpTransport:
         except error.HTTPError as exc:
             err_body = exc.read().decode("utf-8", errors="replace")
             raise HttpAPIError(exc.code, f"HTTP {exc.code}: {err_body}") from exc
+        except AmbiguousTransportError:
+            raise
         except Exception as exc:
+            if is_ambiguous_transport_error(exc):
+                raise AmbiguousTransportError(
+                    f"HTTP_TRANSPORT_AMBIGUOUS: {type(exc).__name__}"
+                ) from exc
             raise HttpExecutorError(f"HTTP transport failed: {exc}") from exc
 
 
@@ -206,7 +213,7 @@ class HttpActionAdapter:
             self._allowed_domains = None
         if self._auth_header and not self._allowed_domains:
             # Fail closed: the header is added to every request, so without an allowlist a
-            # policy pattern that is too wide (`https://host*`) sends the secret anywhere.
+            # policy of `*` or `https://*` sends the secret to whatever host the intent names.
             raise HttpExecutorError(
                 "Refusing to start: an Authorization header is configured without a "
                 "domain allowlist (allowed_domains / --allowed-domains / "
@@ -247,7 +254,13 @@ class HttpActionAdapter:
                 status="FAILED",
                 payload={"http_status": exc.status_code, "error": str(exc)},
             )
+        except AmbiguousTransportError:
+            raise
         except Exception as exc:
+            if is_ambiguous_transport_error(exc):
+                raise AmbiguousTransportError(
+                    f"HTTP_TRANSPORT_AMBIGUOUS: {type(exc).__name__}"
+                ) from exc
             return ExecutionResult(status="FAILED", payload={"error": str(exc)})
 
 
