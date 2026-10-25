@@ -19,11 +19,11 @@
   codes. A pattern or a wildcard is rejected when the policy is loaded
   (`TEMPUS_POLICY_INVALID`). Omit the list to leave currency unconstrained, or name each
   code. A stored dev allow-all policy (`tempus.dev-allow-all.v1.*`) whose currency list is
-  not exact codes is replaced by the current dev policy the next time the gate loads it,
-  or when you run `tempus install-policy --allow-all-dev` again. It is never allowed as
-  stored. If that bundle cannot be verified, the gate stays closed and the error says to
-  reinstall with that command (or `TempusDDB.install_allow_all_dev_policy()`). Any other
-  policy with a non-exact currency list is rejected and is not rewritten.
+  not exact codes fails closed with `TEMPUS_POLICY_INVALID`. The gate does not rewrite
+  it. The error says to run `tempus install-policy --allow-all-dev` (or
+  `TempusDDB.install_allow_all_dev_policy()`), which is the only way that stored policy
+  is replaced. Any other policy with a non-exact currency list is also rejected and is
+  not rewritten.
 - **Lowercase currency codes** are rejected. Send an exact uppercase code.
 - **Payment actions** (`finance.disburse`, `finance.transfer`, `payment.charge`) without a
   `money` object, with null money, or with amount 0 are refused

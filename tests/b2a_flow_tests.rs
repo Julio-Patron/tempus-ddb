@@ -1004,80 +1004,136 @@ fn active_currency_list(storage: &SqliteStorage) -> Value {
     panic!("no active wildcard policy: {policies}");
 }
 
+fn policy_store_snapshot(gate: &Gate) -> String {
+    let connection = Connection::open(&gate.db_path).unwrap();
+    let mut snapshot = String::new();
+    for (label, sql) in [
+        (
+            "bundles",
+            "SELECT policy_version, tenant_id, policy_digest, CAST(issued_at AS TEXT),
+                    CAST(ifnull(retired_at, -1) AS TEXT), bundle_json
+             FROM policy_bundles ORDER BY policy_version",
+        ),
+        (
+            "attestations",
+            "SELECT tenant_id, policy_version, policy_digest, CAST(activated_at AS TEXT),
+                    signer_public_key, signature, attestation_json
+             FROM active_policy_attestations ORDER BY tenant_id, policy_version",
+        ),
+        (
+            "events",
+            "SELECT tenant_id, CAST(sequence_number AS TEXT), event_type, event_digest, event_json
+             FROM event_stream ORDER BY tenant_id, sequence_number",
+        ),
+        (
+            "authorizations",
+            "SELECT action_id, intent_hash, authorization_json
+             FROM action_authorizations ORDER BY action_id",
+        ),
+    ] {
+        snapshot.push_str(label);
+        snapshot.push('\n');
+        let mut statement = connection.prepare(sql).unwrap();
+        let column_count = statement.column_count();
+        let rows = statement
+            .query_map([], |row| {
+                let mut line = String::new();
+                for index in 0..column_count {
+                    if index > 0 {
+                        line.push('|');
+                    }
+                    line.push_str(&row.get::<_, String>(index)?);
+                }
+                Ok(line)
+            })
+            .unwrap();
+        for row in rows {
+            snapshot.push_str(&row.unwrap());
+            snapshot.push('\n');
+        }
+    }
+    snapshot
+}
+
+fn dev_request_error(gate: &Gate, storage: &SqliteStorage, key: &str) -> String {
+    let mut request = parse(&intent(&gate.agent_id, key, "github.com/evil/x"));
+    request["tenant_id"] = json!("acme");
+    request["action_type"] = json!("github.delete_repo");
+    storage
+        .request_action(
+            &request.to_string(),
+            gate.agent_keyfile.to_str().unwrap(),
+            60,
+        )
+        .unwrap_err()
+}
+
+fn assert_stale_dev_currency_error(error: &str) {
+    assert!(error.contains("TEMPUS_POLICY_INVALID"), "{error}");
+    assert!(error.contains("install-policy --allow-all-dev"), "{error}");
+    assert!(
+        error.contains("TempusDDB.install_allow_all_dev_policy"),
+        "{error}"
+    );
+    assert!(error.contains("not allowed"), "{error}");
+}
+
 #[test]
-fn stale_dev_allow_all_with_a_currency_wildcard_reinstalls_or_fails_closed() {
+fn stale_dev_allow_all_with_a_currency_wildcard_fails_closed() {
     let (gate, storage) = Gate::new();
     let original = parse(&storage.install_allow_all_dev_policy().unwrap());
     drop(storage);
     let stale_digest = store_signed_dev_policy_with_currency_wildcard(&gate);
     assert_ne!(original["policy_digest"].as_str().unwrap(), stale_digest);
+    let before = policy_store_snapshot(&gate);
     let storage = gate.open();
     assert_eq!(active_currency_list(&storage), json!(["*"]));
 
-    // Loading the policy replaces the wildcard. The request is allowed only because
-    // the explicit dev policy was installed again, and the new bundle has no currency list.
-    let decision = gate.request(&storage, "stale-load", "acme");
-    assert_eq!(decision["authorization"]["decision"], "ALLOWED");
-    assert!(decision["policy_bundle"]["constraints"]
-        .get("allowed_currencies")
-        .is_none());
-    assert_ne!(
-        decision["policy_bundle"]["policy_digest"].as_str().unwrap(),
-        stale_digest
-    );
-    assert!(decision["policy_bundle"]["policy_version"]
-        .as_str()
-        .unwrap()
-        .starts_with("tempus.dev-allow-all.v1"));
+    // Loading the signed policy does not rewrite it and does not allow the action.
+    let error = dev_request_error(&gate, &storage, "stale-load");
+    assert_stale_dev_currency_error(&error);
+    drop(storage);
+    assert_eq!(policy_store_snapshot(&gate), before);
+    let storage = gate.open();
+    assert_eq!(active_currency_list(&storage), json!(["*"]));
+    let error_again = dev_request_error(&gate, &storage, "stale-load-2");
+    assert_stale_dev_currency_error(&error_again);
+    drop(storage);
+    assert_eq!(policy_store_snapshot(&gate), before);
+
+    // The operator command is what replaces the stored policy.
+    let storage = gate.open();
     let replaced = parse(&storage.install_allow_all_dev_policy().unwrap());
     let again = parse(&storage.install_allow_all_dev_policy().unwrap());
     assert_eq!(replaced["policy_digest"], again["policy_digest"]);
+    assert_ne!(replaced["policy_digest"].as_str().unwrap(), stale_digest);
+    assert!(replaced["constraints"].get("allowed_currencies").is_none());
+    assert!(replaced["policy_version"]
+        .as_str()
+        .unwrap()
+        .starts_with("tempus.dev-allow-all.v1"));
+    let allowed = gate.request(&storage, "stale-repaired", "acme");
+    assert_eq!(allowed["authorization"]["decision"], "ALLOWED");
+    assert!(allowed["policy_bundle"]["constraints"]
+        .get("allowed_currencies")
+        .is_none());
     assert_eq!(
-        replaced["policy_digest"],
-        decision["policy_bundle"]["policy_digest"]
+        allowed["policy_bundle"]["policy_digest"],
+        replaced["policy_digest"]
     );
-    assert!(active_currency_list(&storage).is_null());
 
-    // A stored wildcard whose signature does not verify is not allowed and is not rewritten.
+    // A stored wildcard whose signature does not verify is also left unchanged.
     let (gate_bad, storage_bad) = Gate::new();
     storage_bad.install_allow_all_dev_policy().unwrap();
     drop(storage_bad);
     store_signed_dev_policy_with_currency_wildcard(&gate_bad);
     corrupt_active_bundle_signature(&gate_bad);
+    let before_bad = policy_store_snapshot(&gate_bad);
     let storage_bad = gate_bad.open();
-    let mut request = parse(&intent(
-        &gate_bad.agent_id,
-        "stale-bad",
-        "github.com/evil/x",
-    ));
-    request["tenant_id"] = json!("acme");
-    request["action_type"] = json!("github.delete_repo");
-    let error = storage_bad
-        .request_action(
-            &request.to_string(),
-            gate_bad.agent_keyfile.to_str().unwrap(),
-            60,
-        )
-        .unwrap_err();
-    assert!(error.contains("install-policy --allow-all-dev"), "{error}");
-    assert!(error.contains("not allowed"), "{error}");
-    assert!(
-        error.contains("TempusDDB.install_allow_all_dev_policy"),
-        "{error}"
-    );
-    assert_eq!(active_currency_list(&storage_bad), json!(["*"]));
-
-    let repaired = parse(&storage_bad.install_allow_all_dev_policy().unwrap());
-    assert!(repaired["constraints"].get("allowed_currencies").is_none());
-    assert!(repaired["policy_version"]
-        .as_str()
-        .unwrap()
-        .starts_with("tempus.dev-allow-all.v1"));
-    let allowed = gate_bad.request(&storage_bad, "stale-repaired", "acme");
-    assert_eq!(allowed["authorization"]["decision"], "ALLOWED");
-    assert!(allowed["policy_bundle"]["constraints"]
-        .get("allowed_currencies")
-        .is_none());
+    let error = dev_request_error(&gate_bad, &storage_bad, "stale-bad");
+    assert_stale_dev_currency_error(&error);
+    drop(storage_bad);
+    assert_eq!(policy_store_snapshot(&gate_bad), before_bad);
 
     // A non-dev policy with a currency wildcard is rejected and nothing is allowed by default.
     let (gate_real, storage_real) = Gate::new();

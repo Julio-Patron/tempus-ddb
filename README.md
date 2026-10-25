@@ -295,11 +295,10 @@ tenant `*` later replaces it; a gate whose active `*` policy is not the dev one 
 
 Upgrading: a database seeded by an older gate still contains `tempus.baseline.v1`.
 It is now ignored (the gate denies). Install a real policy, or opt in with
-`--allow-all-dev` for development. A dev allow-all policy stored by a gate that put a
-wildcard in `allowed_currencies` is replaced by the current dev policy the next time the
-gate loads it (or when you run `--allow-all-dev` again). That stored list is never
-treated as allow. If the stored bundle cannot be verified, the gate stays closed and the
-error names `tempus install-policy --allow-all-dev`.
+`--allow-all-dev` for development. A dev allow-all policy stored with a non-exact
+`allowed_currencies` list fails closed (`TEMPUS_POLICY_INVALID`) and the gate leaves
+that signed row unchanged. Run `tempus install-policy --allow-all-dev` (or
+`TempusDDB.install_allow_all_dev_policy()`) to replace it. Until then it is not allowed.
 
 Policy evaluation is deterministic and rejects unknown constraints, floating-point input,
 oversized input, tenant/resource/action mismatches, excessive TTL, disallowed executors,
@@ -893,7 +892,7 @@ Upgrading from 0.5.3, these also break:
 
 | What you send | Result | Fix |
 | --- | --- | --- |
-| A currency pattern or wildcard in `allowed_currencies` | `TEMPUS_POLICY_INVALID`: entries must be exact currency codes | Exact codes (`USD`), or omit the list. A stored dev allow-all policy with a non-exact list is replaced on the next load, or reinstall with `tempus install-policy --allow-all-dev`. It is not allowed as stored. Any other such policy is rejected until you install a valid one. |
+| A currency pattern or wildcard in `allowed_currencies` | `TEMPUS_POLICY_INVALID`: entries must be exact currency codes. A stored dev allow-all policy with a non-exact list fails the same way and the gate does not rewrite it | Exact codes (`USD`), or omit the list. Replace a stored dev allow-all policy by running `tempus install-policy --allow-all-dev` (or `TempusDDB.install_allow_all_dev_policy()`). Any other such policy is rejected until you install a valid one. |
 | A lowercase currency code | Refused: `money.currency` / `money.asset` must be an exact 3-letter code, and the same rule applies to `allowed_currencies` | An uppercase exact code (`USD`) |
 | A payment action (`finance.disburse`, `finance.transfer`, `payment.charge`) with no `money`, null money, or amount 0 | `TEMPUS_INVALID_CONTRACT` (a money object, or a non-zero amount). Nothing is signed | A `money` object whose amount is greater than zero |
 | JSON with a repeated object key | `DUPLICATE_JSON_KEY` from the gate (`parse_canonical`), the Rust executor and the Python runtime | Emit each object key once |

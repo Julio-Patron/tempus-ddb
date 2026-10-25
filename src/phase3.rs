@@ -212,9 +212,10 @@ fn stale_dev_currency_error(detail: &str) -> String {
 /// Explicit development opt-in: install a signed wildcard policy that allows every
 /// action, resource and executor for every tenant without its own policy. Currency is
 /// not listed: `allowed_currencies` accepts only exact codes, so omitting it leaves
-/// currency unconstrained. Idempotent while a current dev policy is active. A stored
-/// dev policy whose currency list is not exact codes is replaced by this one and is
-/// never returned as allow. Refuses to replace a different active `*` policy.
+/// currency unconstrained. Idempotent while a current dev policy is active. This call
+/// is the only path that replaces a stored dev policy whose currency list is not exact
+/// codes; loading that policy never rewrites it. Refuses to replace a different active
+/// `*` policy.
 pub(crate) fn install_allow_all_dev_policy(
     conn: &Connection,
     signer: &ConfiguredSigner,
@@ -464,7 +465,6 @@ pub(crate) fn active_policy(
             );
         }
         return accept_stored_bundle(
-            conn,
             signer,
             &version,
             &digest,
@@ -527,7 +527,6 @@ pub(crate) fn active_policy(
             );
         }
         return accept_stored_bundle(
-            conn,
             signer,
             &version,
             &digest,
@@ -662,11 +661,10 @@ pub(crate) fn verify_policy_bundle(
     validate_policy_spec(&body)
 }
 
-/// Load a stored bundle. A signed dev allow-all policy with a non-exact currency
-/// list is replaced in place. A bundle that does not verify is not allowed and is
-/// not rewritten into an allow-all.
+/// Load a stored bundle without rewriting it. A dev allow-all policy whose currency
+/// list is not exact codes is refused and left as stored. The operator replaces it
+/// by calling `install_allow_all_dev_policy`.
 fn accept_stored_bundle(
-    conn: &Connection,
     signer: &ConfiguredSigner,
     version: &str,
     digest: &str,
@@ -683,19 +681,9 @@ fn accept_stored_bundle(
         Err(error) => return Err(format!("Stored policy bundle is invalid JSON: {error}")),
     };
     if stale_dev_allow_all(&bundle) {
-        if bundle.get("policy_digest").and_then(Value::as_str) != Some(digest) {
-            return Err(stale_dev_currency_error(
-                "stored dev allow-all policy digest does not match its attestation.",
-            ));
-        }
-        authenticate_policy_bundle(&bundle, Some(&signer.identity().public_key)).map_err(
-            |error| {
-                stale_dev_currency_error(&format!(
-                    "stored dev allow-all policy cannot be verified ({error})."
-                ))
-            },
-        )?;
-        return install_allow_all_dev_policy(conn, signer, crate::b2a::now_micros()?);
+        return Err(stale_dev_currency_error(
+            "stored dev allow-all policy cannot be used.",
+        ));
     }
     verify_policy_bundle(&bundle, Some(&signer.identity().public_key))?;
     if bundle.get("policy_digest").and_then(Value::as_str) != Some(digest) {
