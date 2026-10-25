@@ -17,3 +17,22 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+
+  # Security updates for the root uv.lock are scheduled as directory "/."
+  # while version updates for the same manifest use "/". That second source
+  # is what fails the Dependabot Updates workflow: filelock 3.32.4 (pulled
+  # only by the pip-audit dev extra, via CacheControl's filecache extra) is
+  # vulnerable, and every fixed release requires Python >= 3.11. This
+  # project still supports 3.10, so the updater records
+  # security_update_not_possible and the job exits 1. Ignoring those
+  # versions on the "/." source stops that duplicate job from failing.
+  # CI already prunes pip-audit before it audits the lock.
+  - package-ecosystem: uv
+    directory: /.
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    ignore:
+      - dependency-name: filelock
+        versions:
+          - ">= 0"
