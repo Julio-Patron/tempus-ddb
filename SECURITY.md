@@ -15,7 +15,7 @@ will be included in the next tagged beta.
 
 If you discover a security vulnerability, please report it responsibly.
 
-- Open a private security advisory on GitHub: https://github.com/elbuilder77/tempus-ddb/security/advisories/new
+- Open a private security advisory on GitHub: https://github.com/Julio-Patron/tempus-ddb/security/advisories/new
 
 Please do **not** open a public issue for security vulnerabilities.
 

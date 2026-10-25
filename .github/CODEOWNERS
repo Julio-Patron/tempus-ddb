@@ -1,9 +1,9 @@
 # Default ownership
-* @elbuilder77
+* @Julio-Patron
 
 # Security-sensitive protocol and release surfaces
-/src/ @elbuilder77
-/python/tempus_ddb/ @elbuilder77
-/.github/workflows/ @elbuilder77
-/SECURITY.md @elbuilder77
-/THREAT_MODEL.md @elbuilder77
+/src/ @Julio-Patron
+/python/tempus_ddb/ @Julio-Patron
+/.github/workflows/ @Julio-Patron
+/SECURITY.md @Julio-Patron
+/THREAT_MODEL.md @Julio-Patron
