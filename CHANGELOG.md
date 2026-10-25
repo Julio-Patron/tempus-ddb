@@ -47,8 +47,9 @@ HTTP status of 500 or higher stored on the exception). Connection refused stays
 rule. GitHub already recorded these failures as `UNKNOWN`.
 
 A `RuntimeError` whose text mentions `500` or `timeout` is no longer `UNKNOWN`.
-This change is independent of the pattern-matching change and can ship on its
-own (0.5.5).
+Migration notes are in the README section "Common cases that now break, and how to
+fix them". This change is independent of the pattern-matching change and can ship
+on its own (0.5.5).
 
 ### Documentation
 - README / CHANGELOG: the duplicate-key check applies to *verified* documents, not to what

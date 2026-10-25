@@ -27,6 +27,10 @@ than its convenience APIs because authorization receipts may outlive a deploymen
   the payment beneficiary allowlist. The HTTP domain allowlist is an exact host, `*`,
   or `*.domain` (an exact host does not include its subdomains). See `CHANGELOG.md`
   and the README section "Common cases that now break, and how to fix them".
+- A transport failure where the effect may already have happened (timeout, reset,
+  disconnect, TLS, EOF, or HTTP 5xx) is recorded as `UNKNOWN` and is not retried.
+  Classification is by exception type. A validation error stays `FAILED`. The same
+  README section has the migration notes.
 
 ## Stored data
 

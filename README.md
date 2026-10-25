@@ -900,6 +900,14 @@ a whole component. These are denials, not new allows:
 | An HTTP allowlist entry that was meant to include subdomains (`example.com` used to allow labels under it) | Only that exact host matches | Add `*.domain` for the labels under it, and keep the apex as its own entry if it should still match. `*` still means every host |
 | A payment allowlist entry (`allowed_beneficiaries` or `PAYMENT_ALLOWED_BENEFICIARIES`) that used `*` as a textual prefix | The entry authorizes nobody. The policy field of the same name uses the same rule | An exact beneficiary, `*`, or a `*` that is its own component |
 
+A transport failure where the effect may already have happened is no longer a definitive
+`FAILED`. The runtime classifies that by exception type, not by words in the message:
+
+| What you had | Result | Fix |
+| --- | --- | --- |
+| An HTTP, payment, or Slack call that timed out, reset, disconnected, failed TLS, hit EOF, or returned HTTP 5xx, previously recorded as `FAILED` | Signed `UNKNOWN`. The permit is not retried. Connection refused stays `FAILED`: the peer never accepted the request | Reconcile the external effect before a new action. Raise `AmbiguousTransportError`, or the real exception type, when the outcome is unknown |
+| Code or a custom adapter that expected `UNKNOWN` because the exception text mentioned a status code or a timeout | A validation error and any other exception stay `FAILED`, even when the message mentions those words. Only the exception type counts, or an HTTP status of 500 or higher stored on the exception | Do not wrap a transport failure in a generic exception. Raise the original error, or `AmbiguousTransportError` |
+
 Custom executors do not need to convert their results: the packaged runtime records floats,
 huge integers, `Decimal` and `datetime` as strings, and a result it cannot represent in a
 degraded form (with the adapter's own status) instead of recording `FAILED`. An exception
