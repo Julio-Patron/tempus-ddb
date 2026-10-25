@@ -6,6 +6,7 @@ anywhere: `socket.getaddrinfo` and `socket.create_connection` are replaced by re
 """
 
 import socket
+import ssl
 
 import pytest
 from tempus_ddb import _http
@@ -198,6 +199,12 @@ def test_tls_still_verifies_the_name_not_the_ip(monkeypatch):
     seen = {}
 
     class FakeContext:
+        # http.client before 3.12 reads these on every supplied context.
+        # They stay in verifying mode: CERT_NONE would be rejected, and a
+        # missing attribute aborts before the handshake is observed.
+        verify_mode = ssl.CERT_REQUIRED
+        check_hostname = True
+
         def wrap_socket(self, sock, server_hostname=None):
             seen["server_hostname"] = server_hostname
             raise OSError("harness: stop after the handshake call")
