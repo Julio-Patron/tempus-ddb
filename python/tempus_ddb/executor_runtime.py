@@ -194,7 +194,7 @@ class ExecutorRuntimeError(RuntimeError):
 
 
 def _reject_duplicate_keys(pairs):
-    """object_pairs_hook: a repeated key is ambiguous, so it is an error."""
+    """object_pairs_hook: a repeated key is an error."""
     seen = {}
     for key, item in pairs:
         if key in seen:
@@ -292,9 +292,7 @@ class ExecutorRuntime:
 
     def execute_permit(self, permit_json: str, adapter: ActionAdapter) -> str:
         """Enforce atomic permit consumption, invoke adapter, and sign outcome receipt."""
-        # Reject an ambiguous document before the permit is consumed. The verified
-        # intent is the top-level `intent` bound by `authorization.intent_hash`.
-        # `authorization.intent` is not an execution source.
+        # The verified intent is the top-level `intent`.
         permit_data = _parse_permit(permit_json)
 
         # 1. Enforce atomic single-consumption and schema verification

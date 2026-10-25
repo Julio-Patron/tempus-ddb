@@ -911,8 +911,8 @@ fn sign_digest_bytes(keyfile: &Path, digest_hex: &str) -> String {
     hex::encode(key.sign(&hex::decode(digest_hex).unwrap()).to_bytes())
 }
 
-/// Rewrite the active dev policy so it is signed like a bundle whose currency list is a wildcard.
-fn store_signed_dev_policy_with_currency_wildcard(gate: &Gate) -> String {
+/// Rewrite the active dev policy so its currency list is not exact codes, and re-sign it.
+fn store_signed_dev_policy_with_a_non_exact_currency_list(gate: &Gate) -> String {
     let connection = Connection::open(&gate.db_path).unwrap();
     let (version, bundle_json, issued_at): (String, String, i64) = connection
         .query_row(
@@ -1079,11 +1079,11 @@ fn assert_stale_dev_currency_error(error: &str) {
 }
 
 #[test]
-fn stale_dev_allow_all_with_a_currency_wildcard_fails_closed() {
+fn stale_dev_allow_all_with_a_non_exact_currency_list_fails_closed() {
     let (gate, storage) = Gate::new();
     let original = parse(&storage.install_allow_all_dev_policy().unwrap());
     drop(storage);
-    let stale_digest = store_signed_dev_policy_with_currency_wildcard(&gate);
+    let stale_digest = store_signed_dev_policy_with_a_non_exact_currency_list(&gate);
     assert_ne!(original["policy_digest"].as_str().unwrap(), stale_digest);
     let before = policy_store_snapshot(&gate);
     let storage = gate.open();
@@ -1122,11 +1122,11 @@ fn stale_dev_allow_all_with_a_currency_wildcard_fails_closed() {
         replaced["policy_digest"]
     );
 
-    // A stored wildcard whose signature does not verify is also left unchanged.
+    // A stored dev policy whose signature does not verify is also left unchanged.
     let (gate_bad, storage_bad) = Gate::new();
     storage_bad.install_allow_all_dev_policy().unwrap();
     drop(storage_bad);
-    store_signed_dev_policy_with_currency_wildcard(&gate_bad);
+    store_signed_dev_policy_with_a_non_exact_currency_list(&gate_bad);
     corrupt_active_bundle_signature(&gate_bad);
     let before_bad = policy_store_snapshot(&gate_bad);
     let storage_bad = gate_bad.open();
@@ -1135,7 +1135,7 @@ fn stale_dev_allow_all_with_a_currency_wildcard_fails_closed() {
     drop(storage_bad);
     assert_eq!(policy_store_snapshot(&gate_bad), before_bad);
 
-    // A non-dev policy with a currency wildcard is rejected and nothing is allowed by default.
+    // A non-dev policy with a non-exact currency list is rejected and nothing is allowed by default.
     let (gate_real, storage_real) = Gate::new();
     let spec = json!({
         "schema_version": "tempus.policy-bundle.v1",

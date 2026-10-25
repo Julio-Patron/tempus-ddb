@@ -1,8 +1,4 @@
-"""Adversarial money checks: the gate, the Rust executor and the Python runtime agree.
-
-Payment actions are `finance.disburse`, `finance.transfer` and `payment.charge`.
-A repeated JSON key is `DUPLICATE_JSON_KEY` in all three. Currency allowlists are
-exact codes. The runtime executes the verified top-level intent.
+"""Money checks shared by the gate, the Rust executor and the Python runtime.
 """
 
 import base64
@@ -151,8 +147,8 @@ def _sign_ed25519(seed_hex, message: bytes) -> str:
     return signature.hex()
 
 
-def _with_authorization_intent(permit, gate_key_path, other_intent):
-    """Return a still-valid permit whose receipt also carries a different intent."""
+def _resign_authorization(permit, gate_key_path, other_intent):
+    """Return the permit after one authorization field is rewritten and re-signed."""
     document = json.loads(permit)
     assert _canonical(document) == permit
     authorization = dict(document["authorization"])
@@ -182,7 +178,7 @@ def _with_authorization_intent(permit, gate_key_path, other_intent):
         {"amount": "1.00", "currency": "USD", "asset": "EUR"},
     ],
 )
-def test_disagreeing_amount_or_currency_spellings_are_refused(money):
+def test_money_fields_must_match(money):
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         gate, _, agent_id, _, _, agent_key = _world(tmpdir)
         with pytest.raises(Exception) as excinfo:
@@ -197,7 +193,7 @@ def test_disagreeing_amount_or_currency_spellings_are_refused(money):
 
 
 @pytest.mark.parametrize("asset", ["usd", "USD ", "USD\u200b", "\uff35\uff33\uff24"])
-def test_lookalike_currency_codes_are_refused(asset):
+def test_currency_codes_must_be_exact(asset):
     money = {"amount": "1.00", "asset": asset, "beneficiary": "b"}
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         gate, _, agent_id, _, _, agent_key = _world(tmpdir)
@@ -209,7 +205,7 @@ def test_lookalike_currency_codes_are_refused(asset):
 
 
 @pytest.mark.parametrize("currencies", [["US*"], ["*"], ["usd"]])
-def test_a_currency_wildcard_is_rejected_when_the_policy_is_loaded(currencies):
+def test_currency_lists_must_be_exact_codes(currencies):
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         gate, *_ = _world(tmpdir)
         spec = {
@@ -272,8 +268,7 @@ def test_amount_limit_boundary_and_leading_zeros_reach_the_transport_as_written(
             runtime.execute_permit(permit, PaymentActionAdapter(transport=transport))
         )
         assert receipt["status"] == "SUCCEEDED", receipt
-        # The policy evaluated 5000 minor units. The transport is paid the amount
-        # string as written, including the leading zeros.
+        # The transport is paid the amount string as written.
         assert transport.calls == [("00050.00", "USD", "b")]
 
 
@@ -425,7 +420,7 @@ def test_null_amount_or_asset_is_blocked_in_rust_and_python(name, money):
         canonical_money(money)
 
 
-def test_nested_input_amount_is_not_the_amount_the_transport_receives():
+def test_payment_amount_comes_from_the_money_object():
     class Remembering(RecordingTransport):
         def __init__(self):
             super().__init__()
@@ -467,7 +462,7 @@ def test_nested_input_amount_is_not_the_amount_the_transport_receives():
         ("number", 7, "contract"),
     ],
 )
-def test_beneficiary_lookalikes_and_bad_types_are_blocked(name, beneficiary, blocked_by):
+def test_beneficiary_must_match_the_allowlist(name, beneficiary, blocked_by):
     money = {"amount": "1.00", "asset": "USD", "beneficiary": beneficiary}
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         gate, _, agent_id, _, _, agent_key = _world(
@@ -492,7 +487,7 @@ def test_beneficiary_lookalikes_and_bad_types_are_blocked(name, beneficiary, blo
     assert transport.calls == []
 
 
-def test_duplicate_money_keys_are_rejected_by_gate_rust_executor_and_python_runtime():
+def test_repeated_object_keys_are_rejected():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         gate, gate_id, agent_id, exec_db, exec_key, agent_key = _world(tmpdir)
         money = {"amount": "25.00", "asset": "USD", "beneficiary": "b"}
@@ -517,7 +512,7 @@ def test_duplicate_money_keys_are_rejected_by_gate_rust_executor_and_python_runt
             assert "DUPLICATE_JSON_KEY" in str(excinfo.value), label
 
         permit = gate.request_action(_intent(agent_id, "k-clean", money), agent_key, 30)
-        tampered = (
+        samples = (
             permit.replace('"amount":"25.00"', '"amount":"9999.00","amount":"25.00"', 1),
             permit.replace('"asset":"USD"', '"asset":"EUR","asset":"USD"', 1),
             permit.replace(
@@ -526,13 +521,13 @@ def test_duplicate_money_keys_are_rejected_by_gate_rust_executor_and_python_runt
                 1,
             ),
         )
-        for raw in tampered:
+        for raw in samples:
             assert raw != permit
         executor = TempusExecutor(exec_db, exec_key, gate_id, TENANT)
         runtime = ExecutorRuntime(exec_db, exec_key, gate_id, TENANT)
         transport = RecordingTransport()
         adapter = PaymentActionAdapter(transport=transport)
-        for raw in tampered:
+        for raw in samples:
             with pytest.raises(Exception) as excinfo:
                 executor.verify_and_consume_permit(raw)
             assert "DUPLICATE_JSON_KEY" in str(excinfo.value)
@@ -545,7 +540,7 @@ def test_duplicate_money_keys_are_rejected_by_gate_rust_executor_and_python_runt
         assert transport.calls == [("25.00", "USD", "b")]
 
 
-def test_a_different_authorization_intent_is_not_what_gets_executed():
+def test_runtime_uses_the_top_level_intent():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
         gate, gate_id, agent_id, exec_db, exec_key, agent_key = _world(tmpdir)
         permit = gate.request_action(
@@ -557,7 +552,7 @@ def test_a_different_authorization_intent_is_not_what_gets_executed():
             agent_key,
             30,
         )
-        forged = _with_authorization_intent(
+        rewritten = _resign_authorization(
             permit,
             os.path.join(tmpdir, "gate.keys.json"),
             {
@@ -569,14 +564,14 @@ def test_a_different_authorization_intent_is_not_what_gets_executed():
                 },
             },
         )
-        assert json.loads(forged)["intent"]["money"]["amount"] == "25.00"
+        assert json.loads(rewritten)["intent"]["money"]["amount"] == "25.00"
         assert (
-            json.loads(forged)["authorization"]["intent"]["money"]["amount"] == "9999.00"
+            json.loads(rewritten)["authorization"]["intent"]["money"]["amount"] == "9999.00"
         )
         transport = RecordingTransport()
         receipt = json.loads(
             ExecutorRuntime(exec_db, exec_key, gate_id, TENANT).execute_permit(
-                forged, PaymentActionAdapter(transport=transport)
+                rewritten, PaymentActionAdapter(transport=transport)
             )
         )
         assert receipt["status"] == "SUCCEEDED", receipt

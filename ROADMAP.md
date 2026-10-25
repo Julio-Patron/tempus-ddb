@@ -95,12 +95,3 @@ single-consumption or historical verification guarantees.
 Security assumptions and current limitations are maintained in
 [THREAT_MODEL.md](THREAT_MODEL.md). Compatibility commitments are maintained in
 [COMPATIBILITY.md](COMPATIBILITY.md).
-
-## Technical debt
-
-- Money validation is duplicated. The gate reads an amount in Rust
-  (`phase3::validate_money` / `parse_minor_units`) and the payment executor reads it
-  again in Python (`canonical_money`). The two copies can diverge: a spelling one side
-  accepts and the other refuses burns a single-use permit or pays a value the policy did
-  not evaluate. Python should become a thin layer over the Rust gate so there is one
-  reading of `amount`, `amount_minor`, `currency` and `asset`.

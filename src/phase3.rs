@@ -182,8 +182,9 @@ const STALE_DEV_CURRENCY_GUIDANCE: &str = "The stored dev allow-all policy lists
      are not exact codes. It is not allowed. Reinstall with `tempus install-policy --allow-all-dev` \
      or TempusDDB.install_allow_all_dev_policy().";
 
-/// A pre-0.5.4 dev allow-all bundle stored a currency wildcard. Exact codes are still
-/// valid; a missing list is the current shape. Anything else must not be used as-is.
+/// A pre-0.5.4 dev allow-all bundle may store a currency list that is not exact codes.
+/// Exact codes are still valid; a missing list is the current shape. Anything else must
+/// not be used as-is.
 fn stale_dev_allow_all(bundle: &Value) -> bool {
     let version = bundle
         .get("policy_version")
@@ -603,7 +604,7 @@ fn policy_by_version(conn: &Connection, version: &str) -> Result<Option<Value>, 
 }
 
 /// Signature and digest only. A stored dev policy can be authentic and still fail
-/// `validate_policy_spec` because its currency list is a wildcard.
+/// `validate_policy_spec` when its currency list is not exact codes.
 fn authenticate_policy_bundle(
     bundle: &Value,
     expected_public_key: Option<&str>,
@@ -735,8 +736,8 @@ pub(crate) fn evaluate_policy(
     if input_bytes > max_input_bytes {
         reasons.push("POLICY_INPUT_TOO_LARGE".to_string());
     }
-    // Payment actions cannot omit money or pay zero. Invalid money is an error, the same
-    // one `validate_intent` returns, so a permit and its later re-evaluation agree.
+    // Invalid money is an error, the same one `validate_intent` returns, so a permit
+    // and its later re-evaluation agree.
     reject_payment_without_money(&action_type, intent)?;
     if let Some(money) = intent.get("money").filter(|value| !value.is_null()) {
         if !money_allowed(constraints, money)? {
@@ -825,14 +826,14 @@ fn validate_policy_spec(spec: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// ISO-style currency code: three ASCII uppercase letters, with no wildcard.
+/// ISO-style currency code: three ASCII uppercase letters.
 fn is_exact_currency_code(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() == 3 && bytes.iter().all(|byte| byte.is_ascii_uppercase())
 }
 
-/// `allowed_currencies` is an exact allowlist. `*`, `US*` and any other pattern are
-/// rejected here, when the bundle is loaded and again when it is evaluated.
+/// `allowed_currencies` is an exact allowlist. Patterns are rejected when the bundle
+/// is loaded and again when it is evaluated.
 fn exact_currency_list(value: &Value) -> Result<Vec<&str>, String> {
     let codes = pattern_list(Some(value), "allowed_currencies")?;
     for code in &codes {
@@ -910,8 +911,7 @@ fn pattern_list<'a>(value: Option<&'a Value>, field: &str) -> Result<Vec<&'a str
 /// Amounts are minor units with two decimals. `amount` (decimal string) and `amount_minor`
 /// (unsigned integer) are two spellings of one value, and `currency` and `asset` are two
 /// names for one field: if both spellings are present they must agree, and a field of the
-/// wrong type is an error rather than being skipped. Otherwise the policy and an executor
-/// could read different spellings of the same money object.
+/// wrong type is an error rather than being skipped.
 pub(crate) fn validate_money(money: &Value) -> Result<(u64, String), String> {
     let name = |field: &str| -> Result<Option<&str>, String> {
         match money.get(field) {
@@ -991,7 +991,7 @@ fn money_allowed(
     let (amount, currency) = validate_money(money)?;
     let currency = currency.as_str();
     if let Some(currencies) = constraints.get("allowed_currencies") {
-        // Exact codes only: a pattern that survived in an old bundle does not match.
+        // Exact codes only.
         let codes = exact_currency_list(currencies)?;
         if !codes.contains(&currency) {
             return Ok(false);
@@ -1473,7 +1473,7 @@ mod tests {
     }
 
     #[test]
-    fn currency_codes_are_exact_and_wildcards_are_rejected() {
+    fn currency_codes_must_be_exact() {
         for asset in ["usd", "USD ", "USD\u{200b}", "ＵＳＤ", "US*", "*"] {
             let error = validate_money(&json!({"amount": "1.00", "asset": asset})).unwrap_err();
             assert!(
@@ -1512,7 +1512,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dev_allow_all_currency_wildcard_is_stale_and_other_policies_are_not() {
+    fn a_stored_dev_allow_all_with_a_non_exact_currency_list_is_stale() {
         let dev = |currencies: Option<Value>| {
             let mut constraints = serde_json::Map::new();
             if let Some(currencies) = currencies {
@@ -1560,7 +1560,7 @@ mod tests {
     }
 
     #[test]
-    fn adversarial_amount_spellings_and_the_minor_unit_boundary() {
+    fn amount_strings_and_the_minor_unit_boundary() {
         for amount in [
             "1e3",
             "-1.00",

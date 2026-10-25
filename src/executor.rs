@@ -894,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_json_keys_in_a_permit_are_rejected() {
+    fn a_permit_with_a_repeated_object_key_is_rejected() {
         let temp = tempdir().unwrap();
         let key = SigningKey::generate(&mut OsRng);
         let keyfile = temp.path().join("executor.keys.json");

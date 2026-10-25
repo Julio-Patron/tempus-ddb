@@ -67,7 +67,7 @@ class MockPaymentTransport:
 # ASCII digits only (`\d` would take any Unicode digit); same grammar as the gate's
 # `parse_minor_units`: a `.` needs one or two digits, and minor units fit in a u64.
 _DECIMAL_AMOUNT = re.compile(r"([0-9]+)(?:\.([0-9]{1,2}))?")
-# Same rule as the gate: an exact ISO-style code, never a wildcard, space, or look-alike.
+# Same rule as the gate: an exact 3-letter code.
 _EXACT_CURRENCY = re.compile(r"[A-Z]{3}")
 _U64_MAX = 2**64 - 1
 

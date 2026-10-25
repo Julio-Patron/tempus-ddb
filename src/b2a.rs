@@ -2757,7 +2757,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_canonical_rejects_duplicate_object_keys() {
+    fn parse_canonical_rejects_a_repeated_object_key() {
         for raw in [
             r#"{"amount":"9999.00","amount":"25.00"}"#,
             r#"{"asset":"EUR","asset":"USD"}"#,

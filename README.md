@@ -275,9 +275,8 @@ The same template ships as `config/policy.github.example.json` in the source tre
 
 To try the flow without writing a policy, opt in explicitly. This installs a signed
 policy that **allows every action, resource and executor** for every tenant without its
-own policy. It does not set `allowed_currencies`: that list accepts only exact 3-letter
-codes (a wildcard is rejected at install), and leaving it unset does not constrain
-currency. The CLI prints a warning, `tempus doctor` reports `active_policy: FAIL`
+own policy. It does not set `allowed_currencies`, so it does not constrain currency.
+The CLI prints a warning, `tempus doctor` reports `active_policy: FAIL`
 while it is active, and every receipt carries the `tempus.dev-allow-all.v1.*`
 `policy_version`. Never use it in production.
 
@@ -303,7 +302,7 @@ that signed row unchanged. Run `tempus install-policy --allow-all-dev` (or
 Policy evaluation is deterministic and rejects unknown constraints, floating-point input,
 oversized input, tenant/resource/action mismatches, excessive TTL, disallowed executors,
 and money metadata outside the configured currency or minor-unit ceiling. Currency
-allowlists are exact codes (`USD`), never a wildcard or a prefix pattern. Payment actions
+allowlists are exact codes (`USD`). Payment actions
 (`finance.disburse`, `finance.transfer`, `payment.charge`) require a `money` object and
 a non-zero amount.
 
@@ -653,9 +652,7 @@ tempus-payment-executor \
   for three-decimal ones (BHD, KWD). Express limits per currency with that in mind, or keep
   such currencies out of `allowed_currencies`.
 - `money.beneficiary` must be a non-empty string; it is paid exactly as written.
-  `allowed_beneficiaries` may use a textual prefix (`vendor-*`). `allowed_currencies` may
-  not: only exact 3-letter codes, and a wildcard in that list is rejected when the policy
-  is installed.
+  `allowed_currencies` accepts only exact 3-letter codes.
 - **This executor is not a complete payment control.** It checks, per intent, the currency,
   the beneficiary pattern and one maximum amount; it has no
   cumulative, daily or velocity limits, no sanctions/KYC checks, no confirmation of the
@@ -818,12 +815,11 @@ Same exit codes as above (0 VERIFIED, 2 INVALID, 1 usage). Python:
 
 ### What VERIFIED means, and how strict it is
 
-- A document that repeats a JSON object key anywhere is refused with `DUPLICATE_JSON_KEY`:
-  parsers disagree on which value wins. Verifiers
-  report the document `INVALID`. The gate applies the same rule when it receives an
+- A document that repeats a JSON object key anywhere is refused with `DUPLICATE_JSON_KEY`.
+  Verifiers report the document `INVALID`. The gate applies the same rule when it receives an
   intent, outcome, policy or metadata (`parse_canonical`), and the Rust executor and the
-  Python executor runtime reject a permit that repeats a key before consuming it. Nothing
-  is signed from an ambiguous document. Do not generate JSON with repeated keys.
+  Python executor runtime reject a permit that repeats a key before consuming it. Do not
+  generate JSON with repeated keys.
 - Fields outside the schema at the top level of a bundle, in its `trace` or in its
   `checkpoint` wrapper are `INVALID` (`UNKNOWN_FIELD (<path>)`): they would be unsigned
   text travelling inside a verified file.
