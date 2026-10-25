@@ -295,12 +295,16 @@ tenant `*` later replaces it; a gate whose active `*` policy is not the dev one 
 
 Upgrading: a database seeded by an older gate still contains `tempus.baseline.v1`.
 It is now ignored (the gate denies). Install a real policy, or opt in with
-`--allow-all-dev` for development.
+`--allow-all-dev` for development. A dev allow-all policy stored by a gate that put a
+wildcard in `allowed_currencies` is replaced by the current dev policy the next time the
+gate loads it (or when you run `--allow-all-dev` again). That stored list is never
+treated as allow. If the stored bundle cannot be verified, the gate stays closed and the
+error names `tempus install-policy --allow-all-dev`.
 
 Policy evaluation is deterministic and rejects unknown constraints, floating-point input,
 oversized input, tenant/resource/action mismatches, excessive TTL, disallowed executors,
 and money metadata outside the configured currency or minor-unit ceiling. Currency
-allowlists are exact codes (`USD`), never patterns (`*`, `US*`). Payment actions
+allowlists are exact codes (`USD`), never a wildcard or a prefix pattern. Payment actions
 (`finance.disburse`, `finance.transfer`, `payment.charge`) require a `money` object and
 a non-zero amount.
 
@@ -815,8 +819,8 @@ Same exit codes as above (0 VERIFIED, 2 INVALID, 1 usage). Python:
 
 ### What VERIFIED means, and how strict it is
 
-- A document that repeats a JSON object key anywhere (`"amount":"9999.00","amount":"25.00"`)
-  is refused with `DUPLICATE_JSON_KEY`: parsers disagree on which value wins. Verifiers
+- A document that repeats a JSON object key anywhere is refused with `DUPLICATE_JSON_KEY`:
+  parsers disagree on which value wins. Verifiers
   report the document `INVALID`. The gate applies the same rule when it receives an
   intent, outcome, policy or metadata (`parse_canonical`), and the Rust executor and the
   Python executor runtime reject a permit that repeats a key before consuming it. Nothing
@@ -884,6 +888,16 @@ for earlier versions can hit `NON_EXACT_NUMBER` (the message names the path, for
 | A float in `input` (`{"price": 19.99}`) | `NON_EXACT_NUMBER ... $.input.price` (it used to produce a signed `BLOCKED`) | A string (`"19.99"`) or an integer in minor units (`1999`) |
 | A decimal in agent `metadata`, a policy or an outcome `output` | `NON_EXACT_NUMBER` at its path | A string (`"0.5"`); policy limits such as `max_money_amount_minor` are already integers |
 | `NaN`, `Infinity`, `1e400` or `-0` from the CLI (`--intent`, `--outcome`, `--policy`, `--metadata`) | `NON_EXACT_NUMBER` (raw text given to the Python/Rust API: `1e400` is `NON_EXACT_NUMBER`; `NaN`/`Infinity` are "must be valid JSON", they are not JSON) | Send a string, or write `0` for `-0` |
+
+Upgrading from 0.5.3, these also break:
+
+| What you send | Result | Fix |
+| --- | --- | --- |
+| A currency pattern or wildcard in `allowed_currencies` | `TEMPUS_POLICY_INVALID`: entries must be exact currency codes | Exact codes (`USD`), or omit the list. A stored dev allow-all policy with a non-exact list is replaced on the next load, or reinstall with `tempus install-policy --allow-all-dev`. It is not allowed as stored. Any other such policy is rejected until you install a valid one. |
+| A lowercase currency code | Refused: `money.currency` / `money.asset` must be an exact 3-letter code, and the same rule applies to `allowed_currencies` | An uppercase exact code (`USD`) |
+| A payment action (`finance.disburse`, `finance.transfer`, `payment.charge`) with no `money`, null money, or amount 0 | `TEMPUS_INVALID_CONTRACT` (a money object, or a non-zero amount). Nothing is signed | A `money` object whose amount is greater than zero |
+| JSON with a repeated object key | `DUPLICATE_JSON_KEY` from the gate (`parse_canonical`), the Rust executor and the Python runtime | Emit each object key once |
+| A permit whose only intent was `authorization.intent` | The runtime does not execute that field | Put the intent at the top level of the permit (the verified `intent`) |
 
 Custom executors do not need to convert their results: the packaged runtime records floats,
 huge integers, `Decimal` and `datetime` as strings, and a result it cannot represent in a

@@ -654,7 +654,9 @@ impl SqliteStorage {
     /// DEVELOPMENT ONLY. Explicitly install a signed policy that allows every action,
     /// resource and executor for every tenant without its own policy. Nothing installs
     /// this implicitly: without it (or a real policy) the gate answers BLOCKED with
-    /// `POLICY_NOT_INSTALLED`. Idempotent while the dev policy is active.
+    /// `POLICY_NOT_INSTALLED`. Idempotent while a current dev policy is active. A stored
+    /// dev policy whose `allowed_currencies` is not a list of exact codes is replaced
+    /// and is never allowed as stored.
     pub fn install_allow_all_dev_policy(&self) -> Result<String, String> {
         let signer = self.load_signer()?;
         let bundle = phase3::install_allow_all_dev_policy(&self.conn, &signer, b2a::now_micros()?)?;

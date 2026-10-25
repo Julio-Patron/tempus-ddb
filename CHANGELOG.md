@@ -14,6 +14,25 @@
 - Money validation is still implemented in both Rust and Python (see ROADMAP, technical
   debt). The two copies are covered by the same adversarial cases.
 
+### Breaking changes when upgrading from 0.5.3
+- **Currency patterns and wildcards.** `allowed_currencies` accepts only exact 3-letter
+  codes. A pattern or a wildcard is rejected when the policy is loaded
+  (`TEMPUS_POLICY_INVALID`). Omit the list to leave currency unconstrained, or name each
+  code. A stored dev allow-all policy (`tempus.dev-allow-all.v1.*`) whose currency list is
+  not exact codes is replaced by the current dev policy the next time the gate loads it,
+  or when you run `tempus install-policy --allow-all-dev` again. It is never allowed as
+  stored. If that bundle cannot be verified, the gate stays closed and the error says to
+  reinstall with that command (or `TempusDDB.install_allow_all_dev_policy()`). Any other
+  policy with a non-exact currency list is rejected and is not rewritten.
+- **Lowercase currency codes** are rejected. Send an exact uppercase code.
+- **Payment actions** (`finance.disburse`, `finance.transfer`, `payment.charge`) without a
+  `money` object, with null money, or with amount 0 are refused
+  (`TEMPUS_INVALID_CONTRACT`). Nothing is signed.
+- **Duplicate JSON object keys** are refused with `DUPLICATE_JSON_KEY` by the gate
+  (`parse_canonical`), the Rust executor and the Python executor runtime.
+- **Permits that only carried `authorization.intent`.** The executor runtime uses the
+  verified top-level `intent` and does not read `authorization.intent`.
+
 ### Documentation
 - README / CHANGELOG: a repeated JSON object key is rejected with `DUPLICATE_JSON_KEY` by
   verifiers and by the gate (`parse_canonical`), the Rust executor and the Python executor
@@ -34,13 +53,7 @@
   0.5.3 does not). Fixed the demo link that lacked `https://`.
 
 ### Security: the policy and the executors read the same money fields
-- **A mismatch between what the policy evaluated and what the payment executor sent let an
-  agent bypass the amount limit and the currency list** (present since the policy engine,
-  5e6b165). The policy read `money.amount_minor` and `money.currency` when present; the
-  executor sent `money.amount` and `money.asset`. With a limit of 10000.00 USD,
-  `{"amount":"99999.00","amount_minor":1,"asset":"USD"}` was `ALLOWED` and the transport
-  received `99999.00`; `{"amount":"1.00","currency":"USD","asset":"EUR"}` passed a USD-only
-  list and the transport received `EUR`. Both bundles verified.
+- Discrepancia entre los campos que leían la política y el ejecutor; actualiza a 0.5.4.
 - Now `money` has one canonical reading (`phase3::validate_money`), used by the gate when
   it receives an intent, by the policy evaluation (also re-run by executors before they
   consume a permit and by the verifiers) and by the payment executor:

@@ -178,11 +178,43 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+const STALE_DEV_CURRENCY_GUIDANCE: &str = "The stored dev allow-all policy lists currencies that \
+     are not exact codes. It is not allowed. Reinstall with `tempus install-policy --allow-all-dev` \
+     or TempusDDB.install_allow_all_dev_policy().";
+
+/// A pre-0.5.4 dev allow-all bundle stored a currency wildcard. Exact codes are still
+/// valid; a missing list is the current shape. Anything else must not be used as-is.
+fn stale_dev_allow_all(bundle: &Value) -> bool {
+    let version = bundle
+        .get("policy_version")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let tenant = bundle
+        .get("tenant_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if tenant != "*" || !version.starts_with(DEV_ALLOW_ALL_POLICY_PREFIX) {
+        return false;
+    }
+    match bundle
+        .get("constraints")
+        .and_then(|constraints| constraints.get("allowed_currencies"))
+    {
+        None => false,
+        Some(currencies) => exact_currency_list(currencies).is_err(),
+    }
+}
+
+fn stale_dev_currency_error(detail: &str) -> String {
+    format!("TEMPUS_POLICY_INVALID: {detail} {STALE_DEV_CURRENCY_GUIDANCE}")
+}
+
 /// Explicit development opt-in: install a signed wildcard policy that allows every
 /// action, resource and executor for every tenant without its own policy. Currency is
 /// not listed: `allowed_currencies` accepts only exact codes, so omitting it leaves
-/// currency unconstrained. Idempotent while the dev policy is active; refuses to
-/// replace a different active `*` policy.
+/// currency unconstrained. Idempotent while a current dev policy is active. A stored
+/// dev policy whose currency list is not exact codes is replaced by this one and is
+/// never returned as allow. Refuses to replace a different active `*` policy.
 pub(crate) fn install_allow_all_dev_policy(
     conn: &Connection,
     signer: &ConfiguredSigner,
@@ -197,30 +229,52 @@ pub(crate) fn install_allow_all_dev_policy(
         )
         .optional()
         .map_err(|e| format!("Failed to inspect active wildcard policy: {e}"))?;
+    let mut replacing_stale = false;
     if let Some((version, bundle_json)) = active {
         if version.starts_with(DEV_ALLOW_ALL_POLICY_PREFIX) {
-            return serde_json::from_str(&bundle_json)
-                .map_err(|e| format!("Stored policy bundle is invalid JSON: {e}"));
-        }
-        if version != LEGACY_BASELINE_POLICY_VERSION {
+            let bundle: Value = serde_json::from_str(&bundle_json).map_err(|error| {
+                stale_dev_currency_error(&format!(
+                    "stored dev allow-all policy is invalid JSON ({error})."
+                ))
+            })?;
+            if !stale_dev_allow_all(&bundle) {
+                return Ok(bundle);
+            }
+            replacing_stale = true;
+        } else if version != LEGACY_BASELINE_POLICY_VERSION {
             return Err(format!(
                 "TEMPUS_DEV_ALLOW_ALL_REFUSED: an explicit wildcard policy '{version}' is active"
             ));
         }
     }
-    let spec = json!({
-        "schema_version": POLICY_BUNDLE_SCHEMA,
-        "policy_version": format!("{DEV_ALLOW_ALL_POLICY_PREFIX}.{issued_at}"),
-        "tenant_id": "*",
-        "constraints": {
-            "allowed_action_types": ["*"],
-            "allowed_resources": ["*"],
-            "allowed_executors": ["*"],
-            "max_ttl_seconds": 86400,
-            "max_input_bytes": 65536
+    let mut issued_at = issued_at;
+    for _ in 0..4 {
+        let spec = json!({
+            "schema_version": POLICY_BUNDLE_SCHEMA,
+            "policy_version": format!("{DEV_ALLOW_ALL_POLICY_PREFIX}.{issued_at}"),
+            "tenant_id": "*",
+            "constraints": {
+                "allowed_action_types": ["*"],
+                "allowed_resources": ["*"],
+                "allowed_executors": ["*"],
+                "max_ttl_seconds": 86400,
+                "max_input_bytes": 65536
+            }
+        });
+        match install_policy(conn, signer, &spec, issued_at) {
+            Ok(bundle) => return Ok(bundle),
+            Err(error) if replacing_stale && error.contains("TEMPUS_POLICY_VERSION_CONFLICT") => {
+                issued_at = issued_at.saturating_add(1);
+            }
+            Err(error) if replacing_stale => {
+                return Err(format!("{error} {STALE_DEV_CURRENCY_GUIDANCE}"));
+            }
+            Err(error) => return Err(error),
         }
-    });
-    install_policy(conn, signer, &spec, issued_at)
+    }
+    Err(stale_dev_currency_error(
+        "could not replace the stored dev allow-all policy.",
+    ))
 }
 
 /// Decision recorded when no policy applies: always BLOCKED with a closed reason code.
@@ -396,7 +450,7 @@ pub(crate) fn active_policy(
         .map_err(|e| format!("Failed to resolve active policy: {e}"))?;
 
     let row = row.filter(|(version, ..)| version != LEGACY_BASELINE_POLICY_VERSION);
-    if let Some((_version, digest, signature, attestation_json, bundle_json)) = row {
+    if let Some((version, digest, signature, attestation_json, bundle_json)) = row {
         let (_attestation_val, canonical_att) =
             crate::b2a::parse_canonical(&attestation_json, "active policy attestation")?;
         let attestation_id = crate::b2a::sha256_hex(canonical_att.as_bytes());
@@ -409,13 +463,14 @@ pub(crate) fn active_policy(
                 "TEMPUS_POLICY_INVALID: active policy attestation signature invalid".to_string(),
             );
         }
-        let bundle: Value = serde_json::from_str(&bundle_json)
-            .map_err(|e| format!("Stored policy bundle is invalid JSON: {e}"))?;
-        verify_policy_bundle(&bundle, Some(&signer.identity().public_key))?;
-        if bundle.get("policy_digest").and_then(Value::as_str) != Some(&digest) {
-            return Err("TEMPUS_POLICY_INVALID: active policy digest mismatch".to_string());
-        }
-        return Ok(bundle);
+        return accept_stored_bundle(
+            conn,
+            signer,
+            &version,
+            &digest,
+            &bundle_json,
+            "TEMPUS_POLICY_INVALID: active policy digest mismatch",
+        );
     }
 
     // If specific tenant not found:
@@ -458,7 +513,7 @@ pub(crate) fn active_policy(
 
     // A baseline seeded by an older gate is ignored: it is not an explicit policy.
     let row_star = row_star.filter(|(version, ..)| version != LEGACY_BASELINE_POLICY_VERSION);
-    if let Some((_version, digest, signature, attestation_json, bundle_json)) = row_star {
+    if let Some((version, digest, signature, attestation_json, bundle_json)) = row_star {
         let (_attestation_val, canonical_att) =
             crate::b2a::parse_canonical(&attestation_json, "active policy attestation")?;
         let attestation_id = crate::b2a::sha256_hex(canonical_att.as_bytes());
@@ -471,13 +526,14 @@ pub(crate) fn active_policy(
                 "TEMPUS_POLICY_INVALID: fallback policy attestation signature invalid".to_string(),
             );
         }
-        let bundle: Value = serde_json::from_str(&bundle_json)
-            .map_err(|e| format!("Stored policy bundle is invalid JSON: {e}"))?;
-        verify_policy_bundle(&bundle, Some(&signer.identity().public_key))?;
-        if bundle.get("policy_digest").and_then(Value::as_str) != Some(&digest) {
-            return Err("TEMPUS_POLICY_INVALID: fallback policy digest mismatch".to_string());
-        }
-        return Ok(bundle);
+        return accept_stored_bundle(
+            conn,
+            signer,
+            &version,
+            &digest,
+            &bundle_json,
+            "TEMPUS_POLICY_INVALID: fallback policy digest mismatch",
+        );
     }
 
     Err(format!(
@@ -547,10 +603,12 @@ fn policy_by_version(conn: &Connection, version: &str) -> Result<Option<Value>, 
     .transpose()
 }
 
-pub(crate) fn verify_policy_bundle(
+/// Signature and digest only. A stored dev policy can be authentic and still fail
+/// `validate_policy_spec` because its currency list is a wildcard.
+fn authenticate_policy_bundle(
     bundle: &Value,
     expected_public_key: Option<&str>,
-) -> Result<(), String> {
+) -> Result<Value, String> {
     if bundle.get("schema_version").and_then(Value::as_str) != Some(POLICY_BUNDLE_SCHEMA) {
         return Err("TEMPUS_POLICY_SCHEMA_UNKNOWN".to_string());
     }
@@ -593,7 +651,57 @@ pub(crate) fn verify_policy_bundle(
     if !verify_signature(&resolved, &digest, &signature) {
         return Err("TEMPUS_POLICY_SIGNATURE_INVALID".to_string());
     }
+    Ok(body)
+}
+
+pub(crate) fn verify_policy_bundle(
+    bundle: &Value,
+    expected_public_key: Option<&str>,
+) -> Result<(), String> {
+    let body = authenticate_policy_bundle(bundle, expected_public_key)?;
     validate_policy_spec(&body)
+}
+
+/// Load a stored bundle. A signed dev allow-all policy with a non-exact currency
+/// list is replaced in place. A bundle that does not verify is not allowed and is
+/// not rewritten into an allow-all.
+fn accept_stored_bundle(
+    conn: &Connection,
+    signer: &ConfiguredSigner,
+    version: &str,
+    digest: &str,
+    bundle_json: &str,
+    digest_mismatch: &str,
+) -> Result<Value, String> {
+    let bundle: Value = match serde_json::from_str(bundle_json) {
+        Ok(bundle) => bundle,
+        Err(error) if version.starts_with(DEV_ALLOW_ALL_POLICY_PREFIX) => {
+            return Err(stale_dev_currency_error(&format!(
+                "stored dev allow-all policy is invalid JSON ({error})."
+            )));
+        }
+        Err(error) => return Err(format!("Stored policy bundle is invalid JSON: {error}")),
+    };
+    if stale_dev_allow_all(&bundle) {
+        if bundle.get("policy_digest").and_then(Value::as_str) != Some(digest) {
+            return Err(stale_dev_currency_error(
+                "stored dev allow-all policy digest does not match its attestation.",
+            ));
+        }
+        authenticate_policy_bundle(&bundle, Some(&signer.identity().public_key)).map_err(
+            |error| {
+                stale_dev_currency_error(&format!(
+                    "stored dev allow-all policy cannot be verified ({error})."
+                ))
+            },
+        )?;
+        return install_allow_all_dev_policy(conn, signer, crate::b2a::now_micros()?);
+    }
+    verify_policy_bundle(&bundle, Some(&signer.identity().public_key))?;
+    if bundle.get("policy_digest").and_then(Value::as_str) != Some(digest) {
+        return Err(digest_mismatch.to_string());
+    }
+    Ok(bundle)
 }
 
 pub(crate) fn evaluate_policy(
@@ -814,8 +922,8 @@ fn pattern_list<'a>(value: Option<&'a Value>, field: &str) -> Result<Vec<&'a str
 /// Amounts are minor units with two decimals. `amount` (decimal string) and `amount_minor`
 /// (unsigned integer) are two spellings of one value, and `currency` and `asset` are two
 /// names for one field: if both spellings are present they must agree, and a field of the
-/// wrong type is an error rather than being skipped. Otherwise the policy could evaluate
-/// one spelling while an executor sent the other (`amount: "99999.00", amount_minor: 1`).
+/// wrong type is an error rather than being skipped. Otherwise the policy and an executor
+/// could read different spellings of the same money object.
 pub(crate) fn validate_money(money: &Value) -> Result<(u64, String), String> {
     let name = |field: &str| -> Result<Option<&str>, String> {
         match money.get(field) {
@@ -1413,6 +1521,31 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    #[test]
+    fn a_dev_allow_all_currency_wildcard_is_stale_and_other_policies_are_not() {
+        let dev = |currencies: Option<Value>| {
+            let mut constraints = serde_json::Map::new();
+            if let Some(currencies) = currencies {
+                constraints.insert("allowed_currencies".to_string(), currencies);
+            }
+            json!({
+                "policy_version": "tempus.dev-allow-all.v1.1",
+                "tenant_id": "*",
+                "constraints": constraints
+            })
+        };
+        assert!(stale_dev_allow_all(&dev(Some(json!(["*"])))));
+        assert!(stale_dev_allow_all(&dev(Some(json!(["US*"])))));
+        assert!(stale_dev_allow_all(&dev(Some(json!(["usd"])))));
+        assert!(!stale_dev_allow_all(&dev(Some(json!(["USD"])))));
+        assert!(!stale_dev_allow_all(&dev(None)));
+        assert!(!stale_dev_allow_all(&json!({
+            "policy_version": "acme-v1",
+            "tenant_id": "acme",
+            "constraints": {"allowed_currencies": ["*"]}
+        })));
     }
 
     #[test]

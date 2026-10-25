@@ -337,6 +337,27 @@ def test_invalid_amount_minor_is_blocked_in_canonical_money_and_the_gate(minor, 
     _refused(excinfo)
 
 
+@pytest.mark.parametrize("action", ["finance.disburse", "finance.transfer"])
+@pytest.mark.parametrize("amount", ["0", "0.00", "000"])
+def test_a_zero_amount_is_refused_for_disburse_and_transfer(action, amount):
+    money = {"amount": amount, "asset": "USD", "beneficiary": "b"}
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        gate, _, agent_id, _, _, agent_key = _world(tmpdir)
+        with pytest.raises(Exception) as excinfo:
+            gate.request_action(
+                _intent(agent_id, f"k-zero-{action}-{amount}", money, action=action),
+                agent_key,
+                30,
+            )
+    assert "non-zero" in _refused(excinfo)
+    transport = RecordingTransport()
+    with pytest.raises(PaymentExecutorError, match="non-zero"):
+        PaymentActionAdapter(transport=transport).execute_action(
+            {"action_type": action, "money": money}
+        )
+    assert transport.calls == []
+
+
 @pytest.mark.parametrize("amount", ["0", "0.00", "000"])
 def test_a_zero_payment_is_refused(amount):
     money = {"amount": amount, "asset": "USD", "beneficiary": "b"}
