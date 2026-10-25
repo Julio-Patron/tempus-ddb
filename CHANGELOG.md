@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Security: pattern matching now respects component boundaries
+
+Pattern matching now respects component boundaries (`.` and `/`). A `*` matches only
+as a whole component. A pattern that is not in that form matches nothing. This applies
+to policy pattern lists, the payment beneficiary allowlist, and the HTTP domain
+allowlist. A `*` glued to text (`host*`, `vendor-*`) used to match as a prefix and now
+matches nothing. A `*` that is its own leading or middle component (`*.example.com`,
+`https://*.example.com/*`) used to be a dead literal and now matches that component, so
+review existing lists for entries of that form before upgrading.
+
+Migration notes are in the README section "Common cases that now break, and how to
+fix them". This change is independent of the transport-outcome classification; both
+ship in 0.5.4.
+
+### Security: ambiguous transport outcomes are classified by exception type
+
+An ambiguous transport outcome is recorded as `UNKNOWN` and is not retried. A
+definitive failure, including a validation error, stays `FAILED`. Classification
+uses the exception type. The HTTP, payment, and Slack adapters follow this rule.
+
+Migration notes are in the README section "Common cases that now break, and how to
+fix them". This change is independent of the pattern-matching change; both ship in
+0.5.4.
 ### Security
 - Security hardening; update to 0.5.4.
 
@@ -74,10 +97,8 @@
   `money.amount is too large`. The parity test also covers these spellings.
 
 ### Security: the HTTP executor fails closed (forge 5)
-- **H1: credentials without an allowlist.** A policy prefix written without the slash after
-  the host (`https://api.example.com*`) also matches `https://api.example.com.evil.net/`, and
-  an executor with an `Authorization` header but no `allowed_domains` connected there and sent
-  the secret; the README example of `tempus-http-executor` was exactly that configuration.
+- **H1: credentials without an allowlist.** An `Authorization` header requires a domain
+  allowlist. Pattern matching for those entries respects component boundaries.
   Now `HttpActionAdapter` (and therefore `tempus-http-executor`) refuses to start, with a
   clear message and no traceback, when an auth header (argument, `--auth-header` or
   `HTTP_EXECUTOR_AUTH_HEADER`) has no non-empty domain allowlist; `*` is the explicit way to
@@ -130,16 +151,18 @@ policy on the permit's intent before consuming it, and read the same intent text
 - Fixed, payment executor: its beneficiary allowlist compared a stripped, lower-cased value
   while the transport received the original (`"ALICE "` passed for `"alice"`). It now
   compares the value as written. **Behaviour change:** `allowed_beneficiaries` /
-  `PAYMENT_ALLOWED_BENEFICIARIES` are case-sensitive and exact (prefix `*` patterns kept).
+  `PAYMENT_ALLOWED_BENEFICIARIES` are case-sensitive and compare the value as written.
+  Wildcards on that allowlist follow the same component rules as the policy (see the
+  unreleased note above): a `*` that is not its own component authorizes nobody.
 - Checked, no mismatch: `action_type` (policy, runtime support check, HTTP method and
   GitHub endpoint use the same string), `resource` for Slack (channel) and GitHub, the
   permit's `intent` (Rust and Python read the same text; the executor re-evaluates the
   policy on it), `money.beneficiary` (policy and executor read the same field).
 - Not evaluated by the policy by design, so not a mismatch but worth knowing: the contents
   of `input` (message text, issue title, PR `head`/`base`, HTTP body). Constrain them in the
-  executor or by `action_type`/`resource`. `allowed_resources` patterns are textual: use
-  `https://api.example.com/*` (with the slash), not `https://api.example.com*`, which also
-  matches `https://api.example.com.evil.net/`.
+  executor or by `action_type`/`resource`. `allowed_resources` patterns were textual
+  prefixes. Pattern matching now respects component boundaries; write `*` as its own
+  component.
 
 ### Security: verifier hardening (independent forge findings)
 - **Duplicate JSON keys are INVALID.** `serde_json` kept the last value of a repeated key

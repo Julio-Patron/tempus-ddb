@@ -587,15 +587,20 @@ tempus-http-executor \
 - **Credentials need an allowlist.** The `Authorization` header is added to every request,
   so the executor refuses to start with `--auth-header` (or `HTTP_EXECUTOR_AUTH_HEADER`)
   unless `--allowed-domains` / `allowed_domains` / `HTTP_EXECUTOR_ALLOWED_DOMAINS` names the
-  hosts that may receive it (`*` accepts every host, explicitly). A host matches if it equals
-  an entry or is a subdomain of it.
-- **Write URL patterns in the policy with the slash after the host.** `allowed_resources`
-  patterns are plain prefixes: `https://api.example.com*` also matches
-  `https://api.example.com.evil.net/` and `https://api.example.com:8443/`. Use
-  `https://api.example.com/*` (or `/v1/*`). `tempus install-policy` prints a WARNING for
-  `http(s)://host*` patterns without that slash.
-- **Ports are not restricted** by the policy prefix nor by the allowlist (`:8443` on an
-  allowed host is allowed). Pin the port in the policy pattern if it matters.
+  hosts that may receive it (`*` accepts every host, explicitly). Pattern matching now
+  respects component boundaries: an entry matches that host only, and `*.domain` matches
+  labels under that domain but not the apex. An exact host does not include its subdomains.
+  A `*` glued to text matches nothing.
+- **Policy patterns match whole components.** `allowed_resources`, `allowed_action_types`,
+  `allowed_executors`, `allowed_currencies` and `allowed_beneficiaries` split on `/` and `.`.
+  A `*` matches only as a whole component, so a path pattern such as `https://api.example.com/*`
+  or `acme/*` covers what follows that separator, and `*.domain` covers labels under that
+  domain. A `*` glued to the surrounding text matches nothing.
+  `tempus install-policy` prints a WARNING for `http(s)` patterns with no `/` before the `*`.
+- **Ports are not restricted by the allowlist** (`:8443` on an allowed host is still allowed).
+  A policy pattern matches the URL text, so a pattern without the port does not match a URL
+  that includes one. Pin the port in the pattern when it matters
+  (`https://api.example.com:8443/*`).
 - **No `.`/`..` path segments**, plain or percent-encoded (`%2e%2e`, `%252e%252e`, `..%2f`),
   and no backslashes: the policy matches the URL *text*, so `/v1/../admin` would pass
   `https://api.example.com/v1/*` while the server serves `/admin`.
@@ -619,6 +624,8 @@ tempus-http-executor \
   degraded summary with **no digest of the full output** (D2-b).
 - The executor sends exactly the URL the policy matched, with no whitespace, control
   characters, backslashes or credentials in it.
+- An ambiguous transport outcome is recorded as `UNKNOWN` and is not retried.
+  Classification uses the exception type. A validation failure is `FAILED`.
 
 ### 3. Slack Executor (`tempus-slack-executor`)
 Dispatches channel alerts and notifications while isolating `SLACK_BOT_TOKEN`:
@@ -626,8 +633,8 @@ Dispatches channel alerts and notifications while isolating `SLACK_BOT_TOKEN`:
 - The permit `resource` is the channel and must be **exactly one**: an ID (`C`, `G` or `D` +
   uppercase letters/digits, e.g. `C0123ABCD`) or a `#channel-name` (lowercase letters, digits,
   `-`, `_`). Slack reads a comma-separated `channel` as several, so `C0123,C9999` is rejected
-  (`TEMPUS_SLACK_BINDING_REJECTED`) before anything is sent. Policy patterns such as `C0123*`
-  are textual prefixes: prefer exact channels in `allowed_resources`.
+  (`TEMPUS_SLACK_BINDING_REJECTED`) before anything is sent. Policy patterns match whole
+  components. Put the exact channel in `allowed_resources`.
 
 ```bash
 tempus-slack-executor \
@@ -662,9 +669,13 @@ tempus-payment-executor \
   for three-decimal ones (BHD, KWD). Express limits per currency with that in mind, or keep
   such currencies out of `allowed_currencies`.
 - `money.beneficiary` must be a non-empty string; it is paid exactly as written.
+- An ambiguous payment-transport outcome is recorded as `UNKNOWN`. A definitive
+  provider or validation error is `FAILED`. The transport must raise the real
+  exception (or `AmbiguousTransportError`) when the outcome is not known.
   `allowed_currencies` accepts only exact 3-letter codes.
 - **This executor is not a complete payment control.** It checks, per intent, the currency,
-  the beneficiary pattern and one maximum amount; it has no
+  the beneficiary pattern and one maximum amount, with the same component patterns as the
+  policy for the beneficiary; it has no
   cumulative, daily or velocity limits, no sanctions/KYC checks, no confirmation of the
   provider's settlement, and the shipped transport is a mock. Put the real controls
   (provider-side limits, approvals, reconciliation) at the provider.
@@ -894,6 +905,24 @@ for earlier versions can hit `NON_EXACT_NUMBER` (the message names the path, for
 | A decimal in agent `metadata`, a policy or an outcome `output` | `NON_EXACT_NUMBER` at its path | A string (`"0.5"`); policy limits such as `max_money_amount_minor` are already integers |
 | `NaN`, `Infinity`, `1e400` or `-0` from the CLI (`--intent`, `--outcome`, `--policy`, `--metadata`) | `NON_EXACT_NUMBER` (raw text given to the Python/Rust API: `1e400` is `NON_EXACT_NUMBER`; `NaN`/`Infinity` are "must be valid JSON", they are not JSON) | Send a string, or write `0` for `-0` |
 
+Pattern matching now respects component boundaries (`.` and `/`). A `*` matches only as
+a whole component. Glued stars become denials; a `*` that is already its own leading or
+middle component (`*.example.com`) used to be a dead literal and now matches, so review
+such entries before upgrading:
+
+| What you had | Result | Fix |
+| --- | --- | --- |
+| A policy pattern whose `*` is glued to the surrounding text (a textual prefix) in `allowed_resources`, `allowed_action_types`, `allowed_executors`, or `allowed_beneficiaries` (`allowed_currencies` takes exact codes only, see below) | The pattern matches nothing, so that entry authorizes nobody | Put `*` in its own component, after `.` or `/` (`name/*`, `*.domain`), or list the exact value. `*` alone still matches everything |
+| An HTTP allowlist entry that was meant to include subdomains (`example.com` used to allow labels under it) | Only that exact host matches | Add `*.domain` for the labels under it, and keep the apex as its own entry if it should still match. `*` still means every host |
+| A payment allowlist entry (`allowed_beneficiaries` or `PAYMENT_ALLOWED_BENEFICIARIES`) that used `*` as a textual prefix | The entry authorizes nobody. The policy field of the same name uses the same rule | An exact beneficiary, `*`, or a `*` that is its own component |
+
+A transport failure where the effect may already have happened is no longer a definitive
+`FAILED`. The runtime classifies that by exception type, not by words in the message:
+
+| What you had | Result | Fix |
+| --- | --- | --- |
+| An HTTP, payment, or Slack transport outcome that is ambiguous | Signed `UNKNOWN`. The permit is not retried. Connection refused stays `FAILED` | Reconcile the external effect before a new action. Raise `AmbiguousTransportError`, or the real exception type, when the outcome is unknown |
+| A validation error or any other definitive adapter exception | Stays `FAILED`. Classification uses the exception type | Raise the original error. Raise `AmbiguousTransportError` when the outcome is unknown |
 Upgrading from 0.5.3, these also break:
 
 | What you send | Result | Fix |

@@ -1,8 +1,7 @@
 """The HTTP executor holds credentials and connects where an intent says: it fails closed.
 
-H1: a policy prefix written without the slash after the host (`https://api.example.com*`)
-also matches `https://api.example.com.evil.net/`, and an executor with an Authorization
-header but no domain allowlist connected there and sent the secret.
+An Authorization header without a domain allowlist refuses to start. Allowlist entries
+are an exact host, `*`, or `*.domain`, not a textual prefix.
 """
 
 import json

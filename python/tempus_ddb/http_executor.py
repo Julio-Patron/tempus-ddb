@@ -16,6 +16,7 @@ from .executor_runtime import (
     AmbiguousTransportError,
     ExecutionResult,
     ExecutorRuntime,
+    is_ambiguous_transport_error,
 )
 
 
@@ -29,6 +30,27 @@ class HttpAPIError(HttpExecutorError):
     def __init__(self, status_code: int, message: str):
         super().__init__(message)
         self.status_code = status_code
+
+
+def _host_pattern_matches(pattern: str, hostname: str) -> bool:
+    """Whether an allowlist entry matches ``hostname``.
+
+    An entry is an exact host, ``*`` (every host), or ``*.domain`` (one or more
+    labels under that domain, not the apex). An exact entry does not include
+    other labels. A ``*`` that is not its own component matches nothing.
+    """
+    pattern = pattern.lower()
+    hostname = hostname.lower()
+    if pattern == "*":
+        return True
+    if "*" not in pattern:
+        return pattern == hostname
+    if pattern.count("*") == 1 and pattern.startswith("*."):
+        suffix = pattern[2:]
+        if suffix and not suffix.startswith(".") and not suffix.endswith("."):
+            dotted = "." + suffix
+            return hostname.endswith(dotted) and len(hostname) > len(dotted)
+    return False
 
 
 def _reject_dot_segments(path: str) -> None:
@@ -99,13 +121,9 @@ def _validate_https_url(
         raise HttpExecutorError(f"Target URL destination refused: {exc}") from exc
 
     if allowed_domains is not None:
-        matched = any(
-            hostname == d
-            or hostname.endswith("." + d)
-            or d == "*"
-            for d in allowed_domains
-        )
-        if not matched:
+        # Exact host, `*`, or `*.domain`. A `*` that is not its own component
+        # matches nothing. An exact host does not include other labels.
+        if not any(_host_pattern_matches(entry, hostname) for entry in allowed_domains):
             raise HttpExecutorError(
                 f"Target URL host '{hostname}' is not in allowed domains list"
             )
@@ -156,7 +174,13 @@ class UrllibHttpTransport:
         except error.HTTPError as exc:
             err_body = exc.read().decode("utf-8", errors="replace")
             raise HttpAPIError(exc.code, f"HTTP {exc.code}: {err_body}") from exc
+        except AmbiguousTransportError:
+            raise
         except Exception as exc:
+            if is_ambiguous_transport_error(exc):
+                raise AmbiguousTransportError(
+                    f"HTTP_TRANSPORT_AMBIGUOUS: {type(exc).__name__}"
+                ) from exc
             raise HttpExecutorError(f"HTTP transport failed: {exc}") from exc
 
 
@@ -184,8 +208,7 @@ class HttpActionAdapter:
         else:
             self._allowed_domains = None
         if self._auth_header and not self._allowed_domains:
-            # Fail closed: the header is added to every request, so without an allowlist a
-            # policy pattern that is too wide (`https://host*`) sends the secret anywhere.
+            # Fail closed: an Authorization header requires a domain allowlist.
             raise HttpExecutorError(
                 "Refusing to start: an Authorization header is configured without a "
                 "domain allowlist (allowed_domains / --allowed-domains / "
@@ -226,7 +249,13 @@ class HttpActionAdapter:
                 status="FAILED",
                 payload={"http_status": exc.status_code, "error": str(exc)},
             )
+        except AmbiguousTransportError:
+            raise
         except Exception as exc:
+            if is_ambiguous_transport_error(exc):
+                raise AmbiguousTransportError(
+                    f"HTTP_TRANSPORT_AMBIGUOUS: {type(exc).__name__}"
+                ) from exc
             return ExecutionResult(status="FAILED", payload={"error": str(exc)})
 
 

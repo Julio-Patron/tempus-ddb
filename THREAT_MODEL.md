@@ -66,6 +66,9 @@ root and inspect history, but agents, the gate, and executors perform the runtim
 - Repeating the same request returns the original authorization.
 - Reusing an idempotency key for a different intent is rejected.
 - Permit TTL is bounded to 1–86,400 seconds.
+- Pattern matching now respects component boundaries (`.` and `/`) for policy pattern
+  lists and the payment beneficiary allowlist. A `*` that is not a whole component
+  matches nothing.
 
 ### Outcome integrity and single consumption
 
@@ -79,6 +82,9 @@ root and inspect history, but agents, the gate, and executors perform the runtim
   observations independently of the gate receipt.
 - Restart recovery marks abandoned `STARTED` executions `UNKNOWN`; it never retries an
   external effect whose result is ambiguous.
+- A transport failure after the executor may have sent the effect (timeout, reset,
+  disconnect, TLS, EOF, or HTTP 5xx) is signed `UNKNOWN`. Other adapter exceptions,
+  including validation errors, are signed `FAILED`. The choice is by exception type.
 
 ### GitHub credential isolation and exact binding
 

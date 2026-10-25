@@ -790,10 +790,11 @@ def _find_placeholders(node, path="$"):
 
 
 def _find_prefix_url_patterns(spec):
-    """`allowed_resources` URL prefixes with no `/` between the host and the `*`.
+    """`http(s)` resource patterns whose `*` is not after a `/`.
 
-    Patterns are plain prefixes: `https://api.example.com*` also matches
-    `https://api.example.com.evil.net/` and `https://api.example.com:8443/`.
+    A `*` matches only as a whole component (split on `/` and `.`). A `*` that
+    is not its own component matches nothing. A `*` that is the whole host
+    matches every URL of that scheme.
     """
     constraints = spec.get("constraints") if isinstance(spec, dict) else None
     patterns = constraints.get("allowed_resources") if isinstance(constraints, dict) else []
@@ -838,11 +839,12 @@ def run_install_policy(args):
             sys.exit(1)
         for pattern in _find_prefix_url_patterns(json.loads(spec)):
             print(
-                f"WARNING: allowed_resources pattern '{pattern}' has no '/' after the "
-                "host, so it is a plain prefix that also matches other hosts "
-                "(https://api.example.com.evil.net/) and ports. Name the host and add "
-                "the slash (e.g. 'https://api.example.com/*') and pin the hosts with the "
-                "executor's --allowed-domains.",
+                f"WARNING: allowed_resources pattern '{pattern}' has no '/' before '*'. "
+                "A '*' matches only as a whole component (split on '/' and '.'). "
+                "Glued to the host ('https://api.example.com*') the pattern matches "
+                "nothing; write 'https://api.example.com/*' or 'https://*.example.com/*'. "
+                "A star that is the whole host ('https://*') matches every URL of that "
+                "scheme. Pin hosts with the executor's --allowed-domains.",
                 file=sys.stderr,
             )
         print(json.dumps(json.loads(_gate(args).install_policy(spec)), indent=2))

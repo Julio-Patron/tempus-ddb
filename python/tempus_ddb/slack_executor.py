@@ -9,8 +9,10 @@ from urllib import error, request
 from . import __version__
 from ._http import RedirectRefused, open_request
 from .executor_runtime import (
+    AmbiguousTransportError,
     ExecutionResult,
     ExecutorRuntime,
+    is_ambiguous_transport_error,
 )
 
 # One conversation: a Slack ID (public C, private/group G, direct message D) or a #name
@@ -67,11 +69,21 @@ class UrllibSlackTransport:
         except RedirectRefused as exc:
             raise SlackExecutorError(f"Slack transport failed: {exc}") from exc
         except error.HTTPError as exc:
+            if exc.code >= 500:
+                raise AmbiguousTransportError(
+                    f"SLACK_SERVER_RESPONSE_{exc.code}"
+                ) from exc
             err_body = exc.read().decode("utf-8", errors="replace")
             raise SlackExecutorError(
                 f"Slack HTTP error {exc.code}: {err_body}"
             ) from exc
+        except AmbiguousTransportError:
+            raise
         except Exception as exc:
+            if is_ambiguous_transport_error(exc):
+                raise AmbiguousTransportError(
+                    f"SLACK_TRANSPORT_AMBIGUOUS: {type(exc).__name__}"
+                ) from exc
             raise SlackExecutorError(f"Slack transport failed: {exc}") from exc
 
 
@@ -132,7 +144,13 @@ class SlackActionAdapter:
                 "message_id": res.get("message", {}).get("ts"),
             }
             return ExecutionResult(status="SUCCEEDED", payload=output_payload)
+        except AmbiguousTransportError:
+            raise
         except Exception as exc:
+            if is_ambiguous_transport_error(exc):
+                raise AmbiguousTransportError(
+                    f"SLACK_TRANSPORT_AMBIGUOUS: {type(exc).__name__}"
+                ) from exc
             return ExecutionResult(status="FAILED", payload={"error": str(exc)})
 
 

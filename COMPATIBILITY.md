@@ -22,6 +22,18 @@ than its convenience APIs because authorization receipts may outlive a deploymen
   in `CHANGELOG.md` with its replacement.
 - Security-sensitive behavior may become stricter in a patch release. Such changes are
   called out explicitly and never turn a blocked action into an allowed action.
+- Pattern matching now respects component boundaries (`.` and `/`). A `*` that is not
+  a whole component matches nothing. A `*` that is its own leading or middle component
+  (`*.example.com`) used to be a dead literal and now matches that component; this is
+  the one documented exception to the rule above, so review such entries before
+  upgrading. That applies to every policy pattern list and to the payment beneficiary
+  allowlist. The HTTP domain allowlist is an exact host, `*`,
+  or `*.domain` (an exact host does not include its subdomains). See `CHANGELOG.md`
+  and the README section "Common cases that now break, and how to fix them".
+- A transport failure where the effect may already have happened (timeout, reset,
+  disconnect, TLS, EOF, or HTTP 5xx) is recorded as `UNKNOWN` and is not retried.
+  Classification is by exception type. A validation error stays `FAILED`. The same
+  README section has the migration notes.
 
 ## Stored data
 
