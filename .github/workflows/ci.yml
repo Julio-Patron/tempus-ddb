@@ -70,6 +70,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # rust-toolchain.toml pins the toolchain. Install it here, once, so the
+      # maturin build that pip starts does not race rustup's auto-install
+      # (seen as "detected conflict: 'bin/cargo-clippy'" on macOS and Linux).
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+
       - name: Install Python test dependencies
         run: |
           python -m pip install --upgrade pip "setuptools>=83.0.0"

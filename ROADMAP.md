@@ -33,7 +33,7 @@ experience, and one production-grade executor path comes before a broad adapter 
 
 ## Ejes
 
-Los ítems de 0.5.4, 0.5.5 y el backlog indican el eje que atienden.
+Los ítems de 0.5.5 y el backlog indican el eje que atienden; 0.5.4 ya está publicado.
 
 1. Promesa fail-closed: ninguna acción de un agente sale sin pasar por una política, y si algo falla, se bloquea.
 2. Especificación abierta de políticas y recibos con núcleo Rust; otros repositorios la consumen sin redefinir la semántica.
@@ -41,16 +41,18 @@ Los ítems de 0.5.4, 0.5.5 y el backlog indican el eje que atienden.
 4. Primero la confianza: modelo de amenazas, fuzzing, releases firmados, SBOM y política de vulnerabilidades.
 5. Batería abierta de ataques como benchmark.
 
-## 0.5.4 — Seguridad y matching
+## 0.5.4 — Seguridad y matching (publicado el 2026-10-25)
 
 - Validación de dinero endurecida: las claves JSON duplicadas se rechazan, en los pagos `money` es obligatorio y mayor que cero, y las divisas solo se aceptan como códigos exactos (Ejes 1, 2).
 - Matching de patrones por límite de componente en la política, en la allowlist HTTP y en la de pagos (Ejes 1, 2).
-- Tests adversariales (Eje 5).
-- Integración continua hacia `desarrollo` (Eje 4).
+- Los resultados ambiguos de transporte quedan como `UNKNOWN`, no se reintentan y la clasificación es por tipo de excepción (Eje 1).
+- Default-deny en `tempus init`, `--allow-all-dev` explícito y verificación independiente (`verify-receipt`, `export-bundle`, `verify-bundle`) con clave pública fijada (Ejes 1, 2).
+- Los ejecutores HTTP, GitHub y Slack rechazan redirecciones; el ejecutor HTTP exige allowlist cuando lleva credenciales y bloquea destinos privados o de metadatos (Eje 1).
+- Tests adversariales y de paridad gate/ejecutor (Eje 5).
+- Release firmado con procedencia y SBOM SPDX y CycloneDX, aprobación manual y Trusted Publishing en PyPI y crates.io (Eje 4).
 
-## 0.5.5 — UNKNOWN y tope obligatorio
+## 0.5.5 — Tope obligatorio y ejecutor de pagos seguro por defecto
 
-- Los resultados ambiguos de transporte quedan como `UNKNOWN` y la clasificación es por tipo de excepción (Eje 1).
 - Tope obligatorio `max_money_amount_minor` en las políticas `finance.*` (Ejes 1, 2).
 - Ejecutor de pagos seguro por defecto: sin secreto fijo y sin transporte simulado, salvo un flag de desarrollo (Eje 1).
 - `tempus_gen_keys` no sobrescribe claves existentes y las crea con modo `0600` (Eje 4).

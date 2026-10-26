@@ -26,6 +26,14 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
+## Branches
+
+- `main` holds released code. Every change reaches it through a pull request; the
+  repository accepts squash merges only.
+- `desarrollo` is the integration branch for the next release. Open feature and fix
+  pull requests against it. A release is one pull request from `desarrollo` to `main`,
+  after which `desarrollo` is reset to `main` so the two branches do not diverge.
+
 ## Required validation
 
 Run the same local gate used by CI:
@@ -66,5 +74,6 @@ manual approval gate, and the `gh attestation verify` commands are in
 Describe the problem, the chosen approach, security and compatibility impact, and exact
 validation performed. Link the relevant issue with `Fixes #<number>` when applicable.
 
-Use clear commit subjects such as `feat:`, `fix:`, `docs:`, `test:`, or `chore:`. A
-maintainer may squash a pull request when merging.
+Use clear commit subjects such as `feat:`, `fix:`, `docs:`, `test:`, or `chore:`. Pull
+requests are squash-merged, so the title and description become the commit on the base
+branch.
