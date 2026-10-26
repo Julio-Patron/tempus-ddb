@@ -1,3 +1,28 @@
+//! Tempus DDB: a fail-closed authorization gate for autonomous agent actions.
+//!
+//! An agent signs an *intent*; the gate evaluates a signed tenant policy and issues a
+//! single-use, expiring *permit* (`ALLOWED` or `BLOCKED`); a credential-isolated
+//! *executor* consumes the permit exactly once and signs the *outcome*; the gate links
+//! everything into a dual-signed *receipt* that anyone holding the gate public key can
+//! verify offline. Unknown schemas, policies, identities and execution states are
+//! refused or denied, never allowed, and with no installed policy every action is denied.
+//!
+//! This crate is published mainly as the native extension behind the
+//! [`tempus-ddb` Python package](https://pypi.org/project/tempus-ddb/) (`tempus_ddb._tempus_ddb`,
+//! built with PyO3 and maturin). The Rust API that is useful on its own:
+//!
+//! - [`verify_receipt`], [`verify_bundle`] and [`verify_checkpoint`]: independent
+//!   verification of exported evidence against a pinned gate public key, with no database.
+//! - [`generate_keypair`]: Ed25519 key generation in the key-file format the CLI reads.
+//! - [`StorageLayer`] and [`SqliteStorage`]: the storage boundary used
+//!   by the gate and the legacy decision ledger.
+//!
+//! Signed JSON documents are parsed strictly: duplicate object keys are refused, and
+//! numbers must be exact (no floats, no integers beyond `i64`/`u64`).
+//!
+//! Documentation: <https://julio-patron.github.io/tempus-ddb/docs.html>. Threat model,
+//! compatibility rules and changelog live in the repository:
+//! <https://github.com/Julio-Patron/tempus-ddb>.
 #![allow(clippy::useless_conversion)] // PyO3 macro expansion on Rust 1.96.
 
 #[cfg(not(target_arch = "wasm32"))]
