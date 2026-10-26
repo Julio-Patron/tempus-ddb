@@ -7,6 +7,7 @@ anywhere: `socket.getaddrinfo` and `socket.create_connection` are replaced by re
 
 import socket
 import ssl
+from urllib import request
 
 import pytest
 from tempus_ddb import _http
@@ -108,6 +109,18 @@ class Net:
     def __init__(self, monkeypatch, answers):
         self.answers = answers  # host -> list of answer lists (one per lookup)
         self.lookups, self.connections = [], []
+        # These tests cover the direct (pinned) path. The module opener captured any
+        # HTTPS_PROXY present at import (developer machine, sandboxed runner), which
+        # would send the connection to the proxy, so use one with no proxy.
+        monkeypatch.setattr(
+            _http,
+            "_PINNED_OPENER",
+            request.build_opener(
+                request.ProxyHandler({}),
+                _http._RejectRedirects,
+                _http._PinnedHTTPSHandler,
+            ),
+        )
         monkeypatch.setattr(socket, "getaddrinfo", self.getaddrinfo)
         monkeypatch.setattr(socket, "create_connection", self.create_connection)
 

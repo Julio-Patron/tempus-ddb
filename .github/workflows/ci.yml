@@ -3,9 +3,12 @@ name: CI
 permissions:
   contents: read
 
+# Superseded PR pushes are cancelled. Pushes to main are not: every commit on
+# main gets a finished run, and a re-run of an older main run cannot cancel
+# the run for the current head (that is how 72a3ddf ended up without CI).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'pr' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 on:
   push:
