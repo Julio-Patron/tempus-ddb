@@ -45,6 +45,7 @@ def execution_environment(tmp_path):
     agent_id = json.loads(agent_keyfile.read_text())["public_key"]
     executor_id = json.loads(executor_keyfile.read_text())["public_key"]
     gate.register_agent(gate_id, "tempus-gate", '{"can_delegate":true}')
+    gate.install_allow_all_dev_policy()  # explicit dev opt-in (default is deny-all)
     gate.register_agent(agent_id, "coding-agent", "{}")
     gate.register_agent(executor_id, "github-executor", "{}")
 

@@ -8,7 +8,7 @@ By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Before opening a change
 
-- Use an issue or [GitHub Discussion](https://github.com/elbuilder77/tempus-ddb/discussions)
+- Use an issue or [GitHub Discussion](https://github.com/Julio-Patron/tempus-ddb/discussions)
   for changes that alter a public contract or trust boundary.
 - Report suspected vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 - Keep pull requests focused. Large protocol changes should be split into reviewable,
@@ -19,7 +19,7 @@ By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 Python 3.10 or newer and a stable Rust toolchain are required.
 
 ```bash
-git clone https://github.com/elbuilder77/tempus-ddb.git
+git clone https://github.com/Julio-Patron/tempus-ddb.git
 cd tempus-ddb
 python -m venv .venv
 python -m pip install --upgrade pip
@@ -45,8 +45,8 @@ credentials, logs, caches, wheels, or build output.
 
 ## Security and compatibility expectations
 
-- Preserve fail-closed behavior for unknown schema, policy, identity, signer, and
-  execution states.
+- Keep unknown schema, policy, identity, signer, and execution states rejected or
+  denied (never allowed), and keep the gate default-deny.
 - Add an adversarial regression test for changes to replay prevention, signature
   verification, policy evaluation, credential isolation, or recovery.
 - Treat signed JSON fields and machine status values as public contracts. Follow

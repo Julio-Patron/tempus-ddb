@@ -1,6 +1,6 @@
 # B2A Financial Gate for Multi-Agent Crews — Product Blueprint
 
-*Based on the B2A (Bot-to-Agent / Bot-to-Action) toll gate pattern from [tempus-ddb](https://github.com/elbuilder77/tempus-ddb), adapted for multi-agent workflows (CrewAI, LangGraph, AutoGen, OpenClaw) issuing payments via Stripe, banking APIs, or treasury gateways.*
+*Based on the B2A (Bot-to-Agent / Bot-to-Action) toll gate pattern from [tempus-ddb](https://github.com/Julio-Patron/tempus-ddb), adapted for multi-agent workflows (CrewAI, LangGraph, AutoGen, OpenClaw) issuing payments via Stripe, banking APIs, or treasury gateways.*
 
 ---
 
@@ -68,9 +68,9 @@ Decouple the multi-agent decision team from the financial execution boundary:
 |---|---|---|
 | **Trust Model** | If the agent's role allows "pay", the call executes. | **Zero-Trust:** Even an authorized agent cannot pay without an unconsumed signed permit. |
 | **Credential Boundary** | Stripe API key is in memory accessible to the agent process. | **Strictly Isolated:** Agent memory never contains financial API secrets. |
-| **Replay & Double-Spend** | Network timeouts or retries can cause double charging. | **Cryptographic Single-Consumption:** Once spent, the permit is dead. Retries fail closed. |
+| **Replay & Double-Spend** | Network timeouts or retries can cause double charging. | **Cryptographic Single-Consumption:** Once spent, a second outcome for the same permit is rejected (single-instance executor; multi-instance is not yet proven). |
 | **Financial Contract** | Unstructured JSON payloads with loose number types. | **Universal `money` Envelope:** Enforces integer minor-units (cents), currency codes, and ceiling checks. |
-| **Audit Evidence** | Application database rows or server logs. | **Dual-Signed Receipt:** Mathematically verifiable offline without Stripe access. |
+| **Audit Evidence** | Application database rows or server logs. | **Dual-Signed Receipt:** Verifiable offline with the gate's pinned public key (`verify-receipt` / `verify-bundle`) without Stripe access; it detects altered or forged receipts, not omitted ones. |
 
 ---
 

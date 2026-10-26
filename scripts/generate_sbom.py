@@ -87,7 +87,7 @@ def main():
             "name": "tempus-ddb",
             "SPDXID": project_id,
             "versionInfo": args.version,
-            "downloadLocation": "https://github.com/elbuilder77/tempus-ddb",
+            "downloadLocation": "https://github.com/Julio-Patron/tempus-ddb",
             "filesAnalyzed": False,
             "licenseConcluded": "MIT",
             "licenseDeclared": "MIT",
@@ -113,7 +113,7 @@ def main():
         "dataLicense": "CC0-1.0",
         "SPDXID": "SPDXRef-DOCUMENT",
         "name": f"tempus-ddb-{args.version}",
-        "documentNamespace": f"https://github.com/elbuilder77/tempus-ddb/sbom/{namespace_hash}",
+        "documentNamespace": f"https://github.com/Julio-Patron/tempus-ddb/sbom/{namespace_hash}",
         "creationInfo": {
             "created": created.isoformat().replace("+00:00", "Z"),
             "creators": ["Tool: tempus-ddb/scripts/generate_sbom.py"],

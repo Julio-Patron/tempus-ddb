@@ -7,7 +7,15 @@ use std::time::{Duration, Instant};
 
 pub(crate) const SIGNER_CONFIG_SCHEMA: &str = "tempus.signer-config.v1";
 pub(crate) const POLICY_BUNDLE_SCHEMA: &str = "tempus.policy-bundle.v1";
-pub(crate) const DEFAULT_POLICY_VERSION: &str = "tempus.baseline.v1";
+/// Allow-all policy that gates before 0.5.4 seeded automatically. It is never created or
+/// resolved any more: a database that still carries it is treated as having no policy.
+pub(crate) const LEGACY_BASELINE_POLICY_VERSION: &str = "tempus.baseline.v1";
+/// Prefix of the explicit, opt-in allow-all policy (`install_allow_all_dev_policy`).
+pub(crate) const DEV_ALLOW_ALL_POLICY_PREFIX: &str = "tempus.dev-allow-all.v1";
+/// Sentinel `policy_version` of a BLOCKED receipt issued while no policy was installed.
+pub(crate) const NO_POLICY_VERSION: &str = "tempus.policy-not-installed.v1";
+pub(crate) const POLICY_NOT_INSTALLED_CODE: &str = "POLICY_NOT_INSTALLED";
+pub(crate) const POLICY_NOT_INSTALLED_ERROR: &str = "TEMPUS_POLICY_NOT_INSTALLED";
 pub(crate) const SIGNATURE_ALGORITHM: &str = "Ed25519";
 pub(crate) const IDENTITY_EVENT_SCHEMA: &str = "tempus.identity-lifecycle-event.v1";
 
@@ -170,65 +178,128 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn ensure_default_policy(
+const STALE_DEV_CURRENCY_GUIDANCE: &str = "The stored dev allow-all policy lists currencies that \
+     are not exact codes. It is not allowed. Reinstall with `tempus install-policy --allow-all-dev` \
+     or TempusDDB.install_allow_all_dev_policy().";
+
+/// A pre-0.5.4 dev allow-all bundle may store a currency list that is not exact codes.
+/// Exact codes are still valid; a missing list is the current shape. Anything else must
+/// not be used as-is.
+fn stale_dev_allow_all(bundle: &Value) -> bool {
+    let version = bundle
+        .get("policy_version")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let tenant = bundle
+        .get("tenant_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if tenant != "*" || !version.starts_with(DEV_ALLOW_ALL_POLICY_PREFIX) {
+        return false;
+    }
+    match bundle
+        .get("constraints")
+        .and_then(|constraints| constraints.get("allowed_currencies"))
+    {
+        None => false,
+        Some(currencies) => exact_currency_list(currencies).is_err(),
+    }
+}
+
+fn stale_dev_currency_error(detail: &str) -> String {
+    format!("TEMPUS_POLICY_INVALID: {detail} {STALE_DEV_CURRENCY_GUIDANCE}")
+}
+
+/// Explicit development opt-in: install a signed wildcard policy that allows every
+/// action, resource and executor for every tenant without its own policy. Currency is
+/// not listed: `allowed_currencies` accepts only exact codes, so omitting it leaves
+/// currency unconstrained. Idempotent while a current dev policy is active. This call
+/// is the only path that replaces a stored dev policy whose currency list is not exact
+/// codes; loading that policy never rewrites it. Refuses to replace a different active
+/// `*` policy.
+pub(crate) fn install_allow_all_dev_policy(
     conn: &Connection,
     signer: &ConfiguredSigner,
     issued_at: u64,
 ) -> Result<Value, String> {
-    if let Some(existing) = policy_by_version(conn, DEFAULT_POLICY_VERSION)? {
-        let is_attested: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM active_policy_attestations WHERE tenant_id = '*' AND policy_version = ?1)",
-                [DEFAULT_POLICY_VERSION],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
-        if !is_attested {
-            let policy_digest = required_policy_string(&existing, "policy_digest")?;
-            let attestation_body = json!({
-                "schema_version": "tempus.active-policy-attestation.v1",
-                "tenant_id": "*",
-                "policy_version": DEFAULT_POLICY_VERSION,
-                "policy_digest": policy_digest,
-                "activated_at": issued_at,
-                "signer": signer.identity().to_json(),
-            });
-            let canonical_attestation = crate::b2a::canonicalize(&attestation_body)?;
-            let attestation_id = crate::b2a::sha256_hex(canonical_attestation.as_bytes());
-            let attestation_sig = signer.sign(
-                &hex::decode(&attestation_id)
-                    .map_err(|e| format!("Invalid attestation digest: {e}"))?,
-            )?;
-            let _ = conn.execute(
-                "INSERT OR REPLACE INTO active_policy_attestations
-                 (tenant_id, policy_version, policy_digest, activated_at, signer_public_key, signature, attestation_json)
-                 VALUES ('*', ?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    DEFAULT_POLICY_VERSION,
-                    policy_digest,
-                    issued_at,
-                    signer.identity().public_key,
-                    attestation_sig,
-                    canonical_attestation,
-                ],
-            );
+    let active: Option<(String, String)> = conn
+        .query_row(
+            "SELECT policy_version, bundle_json FROM policy_bundles
+             WHERE tenant_id = '*' AND retired_at IS NULL",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to inspect active wildcard policy: {e}"))?;
+    let mut replacing_stale = false;
+    if let Some((version, bundle_json)) = active {
+        if version.starts_with(DEV_ALLOW_ALL_POLICY_PREFIX) {
+            let bundle: Value = serde_json::from_str(&bundle_json).map_err(|error| {
+                stale_dev_currency_error(&format!(
+                    "stored dev allow-all policy is invalid JSON ({error})."
+                ))
+            })?;
+            if !stale_dev_allow_all(&bundle) {
+                return Ok(bundle);
+            }
+            replacing_stale = true;
+        } else if version != LEGACY_BASELINE_POLICY_VERSION {
+            return Err(format!(
+                "TEMPUS_DEV_ALLOW_ALL_REFUSED: an explicit wildcard policy '{version}' is active"
+            ));
         }
-        return verify_policy_bundle(&existing, None).map(|_| existing);
     }
-    let spec = json!({
-        "schema_version": POLICY_BUNDLE_SCHEMA,
-        "policy_version": DEFAULT_POLICY_VERSION,
-        "tenant_id": "*",
-        "constraints": {
-            "allowed_action_types": ["*"],
-            "allowed_resources": ["*"],
-            "allowed_executors": ["*"],
-            "max_ttl_seconds": 86400,
-            "max_input_bytes": 65536,
-            "allowed_currencies": ["*"],
+    let mut issued_at = issued_at;
+    for _ in 0..4 {
+        let spec = json!({
+            "schema_version": POLICY_BUNDLE_SCHEMA,
+            "policy_version": format!("{DEV_ALLOW_ALL_POLICY_PREFIX}.{issued_at}"),
+            "tenant_id": "*",
+            "constraints": {
+                "allowed_action_types": ["*"],
+                "allowed_resources": ["*"],
+                "allowed_executors": ["*"],
+                "max_ttl_seconds": 86400,
+                "max_input_bytes": 65536
+            }
+        });
+        match install_policy(conn, signer, &spec, issued_at) {
+            Ok(bundle) => return Ok(bundle),
+            Err(error) if replacing_stale && error.contains("TEMPUS_POLICY_VERSION_CONFLICT") => {
+                issued_at = issued_at.saturating_add(1);
+            }
+            Err(error) if replacing_stale => {
+                return Err(format!("{error} {STALE_DEV_CURRENCY_GUIDANCE}"));
+            }
+            Err(error) => return Err(error),
         }
-    });
-    install_policy(conn, signer, &spec, issued_at)
+    }
+    Err(stale_dev_currency_error(
+        "could not replace the stored dev allow-all policy.",
+    ))
+}
+
+/// Decision recorded when no policy applies: always BLOCKED with a closed reason code.
+pub(crate) fn no_policy_decision(
+    intent: &Value,
+    ttl_seconds: u64,
+) -> Result<PolicyDecision, String> {
+    Ok(PolicyDecision {
+        decision: "BLOCKED",
+        reason_codes: vec![POLICY_NOT_INSTALLED_CODE.to_string()],
+        evidence_digest: digest_json(&json!({
+            "schema_version": "tempus.policy-evidence.v1",
+            "policy_version": NO_POLICY_VERSION,
+            "intent": intent,
+            "ttl_seconds": ttl_seconds,
+        }))?,
+        executor_constraints: json!({ "allowed_executors": [] }),
+    })
+}
+
+/// Digest bound into receipts issued while no policy was installed.
+pub(crate) fn no_policy_digest() -> String {
+    crate::b2a::sha256_hex(NO_POLICY_VERSION.as_bytes())
 }
 
 pub(crate) fn install_policy(
@@ -358,10 +429,7 @@ pub(crate) fn active_policy(
     conn: &Connection,
     signer: &ConfiguredSigner,
     tenant_id: &str,
-    now: u64,
 ) -> Result<Value, String> {
-    ensure_default_policy(conn, signer, now)?;
-
     // 1. Check for signed active policy attestation for this specific tenant
     let row = conn
         .query_row(
@@ -383,7 +451,8 @@ pub(crate) fn active_policy(
         .optional()
         .map_err(|e| format!("Failed to resolve active policy: {e}"))?;
 
-    if let Some((_version, digest, signature, attestation_json, bundle_json)) = row {
+    let row = row.filter(|(version, ..)| version != LEGACY_BASELINE_POLICY_VERSION);
+    if let Some((version, digest, signature, attestation_json, bundle_json)) = row {
         let (_attestation_val, canonical_att) =
             crate::b2a::parse_canonical(&attestation_json, "active policy attestation")?;
         let attestation_id = crate::b2a::sha256_hex(canonical_att.as_bytes());
@@ -396,13 +465,13 @@ pub(crate) fn active_policy(
                 "TEMPUS_POLICY_INVALID: active policy attestation signature invalid".to_string(),
             );
         }
-        let bundle: Value = serde_json::from_str(&bundle_json)
-            .map_err(|e| format!("Stored policy bundle is invalid JSON: {e}"))?;
-        verify_policy_bundle(&bundle, Some(&signer.identity().public_key))?;
-        if bundle.get("policy_digest").and_then(Value::as_str) != Some(&digest) {
-            return Err("TEMPUS_POLICY_INVALID: active policy digest mismatch".to_string());
-        }
-        return Ok(bundle);
+        return accept_stored_bundle(
+            signer,
+            &version,
+            &digest,
+            &bundle_json,
+            "TEMPUS_POLICY_INVALID: active policy digest mismatch",
+        );
     }
 
     // If specific tenant not found:
@@ -443,7 +512,9 @@ pub(crate) fn active_policy(
         .optional()
         .map_err(|e| format!("Failed to resolve fallback policy: {e}"))?;
 
-    if let Some((_version, digest, signature, attestation_json, bundle_json)) = row_star {
+    // A baseline seeded by an older gate is ignored: it is not an explicit policy.
+    let row_star = row_star.filter(|(version, ..)| version != LEGACY_BASELINE_POLICY_VERSION);
+    if let Some((version, digest, signature, attestation_json, bundle_json)) = row_star {
         let (_attestation_val, canonical_att) =
             crate::b2a::parse_canonical(&attestation_json, "active policy attestation")?;
         let attestation_id = crate::b2a::sha256_hex(canonical_att.as_bytes());
@@ -456,16 +527,20 @@ pub(crate) fn active_policy(
                 "TEMPUS_POLICY_INVALID: fallback policy attestation signature invalid".to_string(),
             );
         }
-        let bundle: Value = serde_json::from_str(&bundle_json)
-            .map_err(|e| format!("Stored policy bundle is invalid JSON: {e}"))?;
-        verify_policy_bundle(&bundle, Some(&signer.identity().public_key))?;
-        if bundle.get("policy_digest").and_then(Value::as_str) != Some(&digest) {
-            return Err("TEMPUS_POLICY_INVALID: fallback policy digest mismatch".to_string());
-        }
-        return Ok(bundle);
+        return accept_stored_bundle(
+            signer,
+            &version,
+            &digest,
+            &bundle_json,
+            "TEMPUS_POLICY_INVALID: fallback policy digest mismatch",
+        );
     }
 
-    Err("TEMPUS_POLICY_NOT_FOUND: no active policy applies".to_string())
+    Err(format!(
+        "{POLICY_NOT_INSTALLED_ERROR}: no policy is installed for tenant '{tenant_id}'; \
+         install one with `tempus install-policy --policy FILE` (development only: \
+         `tempus install-policy --allow-all-dev`)"
+    ))
 }
 
 pub(crate) fn list_policies(conn: &Connection) -> Result<String, String> {
@@ -528,10 +603,12 @@ fn policy_by_version(conn: &Connection, version: &str) -> Result<Option<Value>, 
     .transpose()
 }
 
-pub(crate) fn verify_policy_bundle(
+/// Signature and digest only. A stored dev policy can be authentic and still fail
+/// `validate_policy_spec` when its currency list is not exact codes.
+fn authenticate_policy_bundle(
     bundle: &Value,
     expected_public_key: Option<&str>,
-) -> Result<(), String> {
+) -> Result<Value, String> {
     if bundle.get("schema_version").and_then(Value::as_str) != Some(POLICY_BUNDLE_SCHEMA) {
         return Err("TEMPUS_POLICY_SCHEMA_UNKNOWN".to_string());
     }
@@ -574,7 +651,46 @@ pub(crate) fn verify_policy_bundle(
     if !verify_signature(&resolved, &digest, &signature) {
         return Err("TEMPUS_POLICY_SIGNATURE_INVALID".to_string());
     }
+    Ok(body)
+}
+
+pub(crate) fn verify_policy_bundle(
+    bundle: &Value,
+    expected_public_key: Option<&str>,
+) -> Result<(), String> {
+    let body = authenticate_policy_bundle(bundle, expected_public_key)?;
     validate_policy_spec(&body)
+}
+
+/// Load a stored bundle without rewriting it. A dev allow-all policy whose currency
+/// list is not exact codes is refused and left as stored. The operator replaces it
+/// by calling `install_allow_all_dev_policy`.
+fn accept_stored_bundle(
+    signer: &ConfiguredSigner,
+    version: &str,
+    digest: &str,
+    bundle_json: &str,
+    digest_mismatch: &str,
+) -> Result<Value, String> {
+    let bundle: Value = match serde_json::from_str(bundle_json) {
+        Ok(bundle) => bundle,
+        Err(error) if version.starts_with(DEV_ALLOW_ALL_POLICY_PREFIX) => {
+            return Err(stale_dev_currency_error(&format!(
+                "stored dev allow-all policy is invalid JSON ({error})."
+            )));
+        }
+        Err(error) => return Err(format!("Stored policy bundle is invalid JSON: {error}")),
+    };
+    if stale_dev_allow_all(&bundle) {
+        return Err(stale_dev_currency_error(
+            "stored dev allow-all policy cannot be used.",
+        ));
+    }
+    verify_policy_bundle(&bundle, Some(&signer.identity().public_key))?;
+    if bundle.get("policy_digest").and_then(Value::as_str) != Some(digest) {
+        return Err(digest_mismatch.to_string());
+    }
+    Ok(bundle)
 }
 
 pub(crate) fn evaluate_policy(
@@ -620,6 +736,9 @@ pub(crate) fn evaluate_policy(
     if input_bytes > max_input_bytes {
         reasons.push("POLICY_INPUT_TOO_LARGE".to_string());
     }
+    // Invalid money is an error, the same one `validate_intent` returns, so a permit
+    // and its later re-evaluation agree.
+    reject_payment_without_money(&action_type, intent)?;
     if let Some(money) = intent.get("money").filter(|value| !value.is_null()) {
         if !money_allowed(constraints, money)? {
             reasons.push("POLICY_MONEY_DENIED".to_string());
@@ -691,7 +810,7 @@ fn validate_policy_spec(spec: &Value) -> Result<(), String> {
         return Err("TEMPUS_POLICY_INVALID: max_input_bytes must be 1..10000000".to_string());
     }
     if let Some(currencies) = constraints.get("allowed_currencies") {
-        pattern_list(Some(currencies), "allowed_currencies")?;
+        exact_currency_list(currencies)?;
     }
     if let Some(beneficiaries) = constraints.get("allowed_beneficiaries") {
         pattern_list(Some(beneficiaries), "allowed_beneficiaries")?;
@@ -707,14 +826,180 @@ fn validate_policy_spec(spec: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// One piece of a pattern or a candidate, split on `.` and `/`.
+///
+/// A `*` is a wildcard only when it is the whole piece. Any other `*` makes
+/// the pattern match nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Piece<'a> {
+    Text(&'a str),
+    Sep(u8),
+    Wild,
+}
+
+/// Split `input` on `.` and `/`. With `wildcards`, a piece that is exactly `*`
+/// becomes [`Piece::Wild`]; a piece that merely contains `*` is rejected.
+fn component_pieces<'a>(input: &'a str, wildcards: bool) -> Option<Vec<Piece<'a>>> {
+    let mut pieces = Vec::new();
+    let mut start = 0usize;
+    for (index, byte) in input.bytes().enumerate() {
+        if byte == b'.' || byte == b'/' {
+            if start < index && !push_piece(&mut pieces, &input[start..index], wildcards) {
+                return None;
+            }
+            pieces.push(Piece::Sep(byte));
+            start = index + 1;
+        }
+    }
+    if start < input.len() && !push_piece(&mut pieces, &input[start..], wildcards) {
+        return None;
+    }
+    Some(pieces)
+}
+
+fn push_piece<'a>(pieces: &mut Vec<Piece<'a>>, text: &'a str, wildcards: bool) -> bool {
+    if wildcards && text.contains('*') {
+        if text != "*" {
+            return false;
+        }
+        pieces.push(Piece::Wild);
+    } else {
+        pieces.push(Piece::Text(text));
+    }
+    true
+}
+
+fn pieces_match(pattern: &[Piece<'_>], candidate: &[Piece<'_>]) -> bool {
+    match pattern {
+        [] => candidate.is_empty(),
+        [Piece::Wild, rest @ ..] => wildcard_matches(rest, candidate),
+        [Piece::Sep(separator), rest @ ..] => match candidate {
+            [Piece::Sep(candidate_separator), tail @ ..] if candidate_separator == separator => {
+                pieces_match(rest, tail)
+            }
+            _ => false,
+        },
+        [Piece::Text(text), rest @ ..] => match candidate {
+            [Piece::Text(candidate_text), tail @ ..] if candidate_text == text => {
+                pieces_match(rest, tail)
+            }
+            _ => false,
+        },
+    }
+}
+
+/// A whole-component `*` consumes one or more pieces.
+///
+/// When more of the pattern follows, the extra pieces stay inside the wildcard
+/// only while they are joined by the separator that comes right after the `*`
+/// (`*.example.com` can span more than one label but cannot cross a `/`). A
+/// trailing `*` consumes the non-empty remainder. It does not match the text
+/// before the star by itself, and it does not match a different component.
+fn wildcard_matches(rest: &[Piece<'_>], candidate: &[Piece<'_>]) -> bool {
+    if rest.is_empty() {
+        return !candidate.is_empty();
+    }
+    let bound = match rest {
+        [Piece::Sep(separator), ..] => Some(*separator),
+        _ => None,
+    };
+    let mut index = 0usize;
+    let mut texts = 0usize;
+    while index < candidate.len() {
+        match candidate[index] {
+            Piece::Text(_) => {
+                texts += 1;
+                index += 1;
+                if pieces_match(rest, &candidate[index..]) {
+                    return true;
+                }
+            }
+            Piece::Sep(separator) => {
+                if texts == 0 || bound != Some(separator) {
+                    return false;
+                }
+                index += 1;
+            }
+            Piece::Wild => return false,
+        }
+    }
+    false
+}
+
+/// `true` when `pattern` matches `candidate` on component boundaries.
+///
+/// `*` alone matches everything. Any other `*` matches only as a whole
+/// component between `.` or `/`. A pattern whose `*` is not a whole component
+/// matches nothing.
+fn pattern_matches(pattern: &str, candidate: &str) -> bool {
+    if pattern == "*" || pattern == candidate {
+        return true;
+    }
+    let Some(pattern_pieces) = component_pieces(pattern, true) else {
+        return false;
+    };
+    let Some(candidate_pieces) = component_pieces(candidate, false) else {
+        return false;
+    };
+    pieces_match(&pattern_pieces, &candidate_pieces)
+}
+
+/// ISO-style currency code: three ASCII uppercase letters.
+fn is_exact_currency_code(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 3 && bytes.iter().all(|byte| byte.is_ascii_uppercase())
+}
+
+/// `allowed_currencies` is an exact allowlist. Patterns are rejected when the bundle
+/// is loaded and again when it is evaluated.
+fn exact_currency_list(value: &Value) -> Result<Vec<&str>, String> {
+    let codes = pattern_list(Some(value), "allowed_currencies")?;
+    for code in &codes {
+        if !is_exact_currency_code(code) {
+            return Err(format!(
+                "TEMPUS_POLICY_INVALID: allowed_currencies entries must be exact currency codes, not patterns ({code})"
+            ));
+        }
+    }
+    Ok(codes)
+}
+
+/// Payment action types the gate and the payment executor both recognize.
+pub(crate) fn is_payment_action(action_type: &str) -> bool {
+    matches!(
+        action_type,
+        "finance.disburse" | "finance.transfer" | "payment.charge"
+    )
+}
+
+/// A payment action has no effect without a money object whose amount is greater than zero.
+pub(crate) fn reject_payment_without_money(
+    action_type: &str,
+    intent: &Value,
+) -> Result<(), String> {
+    if !is_payment_action(action_type) {
+        return Ok(());
+    }
+    match intent.get("money") {
+        Some(money) if money.is_object() => {
+            let (amount, _) = validate_money(money)?;
+            if amount == 0 {
+                Err(
+                    "TEMPUS_INVALID_CONTRACT: a payment action requires a non-zero amount"
+                        .to_string(),
+                )
+            } else {
+                Ok(())
+            }
+        }
+        _ => Err("TEMPUS_INVALID_CONTRACT: a payment action requires a money object".to_string()),
+    }
+}
+
 fn matches_patterns(value: Option<&Value>, candidate: &str) -> Result<bool, String> {
-    Ok(pattern_list(value, "pattern list")?.iter().any(|pattern| {
-        *pattern == "*"
-            || *pattern == candidate
-            || pattern
-                .strip_suffix('*')
-                .is_some_and(|prefix| candidate.starts_with(prefix))
-    }))
+    Ok(pattern_list(value, "pattern list")?
+        .iter()
+        .any(|pattern| pattern_matches(pattern, candidate)))
 }
 
 fn pattern_list<'a>(value: Option<&'a Value>, field: &str) -> Result<Vec<&'a str>, String> {
@@ -735,24 +1020,94 @@ fn pattern_list<'a>(value: Option<&'a Value>, field: &str) -> Result<Vec<&'a str
         .collect()
 }
 
+/// The one reading of an intent's `money` that the policy evaluates and the executors use.
+///
+/// Amounts are minor units with two decimals. `amount` (decimal string) and `amount_minor`
+/// (unsigned integer) are two spellings of one value, and `currency` and `asset` are two
+/// names for one field: if both spellings are present they must agree, and a field of the
+/// wrong type is an error rather than being skipped.
+pub(crate) fn validate_money(money: &Value) -> Result<(u64, String), String> {
+    let name = |field: &str| -> Result<Option<&str>, String> {
+        match money.get(field) {
+            None => Ok(None),
+            Some(Value::String(value)) if !value.is_empty() => Ok(Some(value.as_str())),
+            Some(_) => Err(format!(
+                "TEMPUS_INVALID_CONTRACT: money.{field} must be a non-empty string"
+            )),
+        }
+    };
+    let currency_name = name("currency")?;
+    let asset_name = name("asset")?;
+    for (field, value) in [("currency", currency_name), ("asset", asset_name)] {
+        if let Some(value) = value {
+            if !is_exact_currency_code(value) {
+                return Err(format!(
+                    "TEMPUS_INVALID_CONTRACT: money.{field} must be an exact 3-letter currency code"
+                ));
+            }
+        }
+    }
+    let currency = match (currency_name, asset_name) {
+        (Some(currency), Some(asset)) if currency != asset => {
+            return Err(
+                "TEMPUS_INVALID_CONTRACT: money.currency and money.asset must be the same value"
+                    .to_string(),
+            )
+        }
+        (Some(value), _) | (None, Some(value)) => value.to_string(),
+        (None, None) => return Err("TEMPUS_INVALID_CONTRACT: money.asset is required".to_string()),
+    };
+    // The executor pays this value as written: when present it must be a real string.
+    // (It is only *required* here when `allowed_beneficiaries` constrains it.)
+    if let Some(beneficiary) = money.get("beneficiary") {
+        if !matches!(beneficiary, Value::String(text) if !text.is_empty()) {
+            return Err(
+                "TEMPUS_INVALID_CONTRACT: money.beneficiary must be a non-empty string".to_string(),
+            );
+        }
+    }
+    let from_text = match money.get("amount") {
+        None => None,
+        Some(Value::String(text)) => Some(parse_minor_units(text)?),
+        Some(_) => {
+            return Err(
+                "TEMPUS_INVALID_CONTRACT: money.amount must be a decimal string".to_string(),
+            )
+        }
+    };
+    let from_minor = match money.get("amount_minor") {
+        None => None,
+        Some(value) => Some(value.as_u64().ok_or_else(|| {
+            "TEMPUS_INVALID_CONTRACT: money.amount_minor must be an unsigned integer".to_string()
+        })?),
+    };
+    let amount = match (from_text, from_minor) {
+        (Some(text), Some(minor)) if text != minor => {
+            return Err(format!(
+                "TEMPUS_INVALID_CONTRACT: money.amount ({text} minor units) and \
+                 money.amount_minor ({minor}) disagree"
+            ))
+        }
+        (Some(value), _) | (None, Some(value)) => value,
+        (None, None) => {
+            return Err(
+                "TEMPUS_INVALID_CONTRACT: money.amount must be a decimal string".to_string(),
+            )
+        }
+    };
+    Ok((amount, currency))
+}
+
 fn money_allowed(
     constraints: &serde_json::Map<String, Value>,
     money: &Value,
 ) -> Result<bool, String> {
-    let currency = money
-        .get("currency")
-        .or_else(|| money.get("asset"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| "TEMPUS_INVALID_CONTRACT: money.asset is required".to_string())?;
-    let amount = if let Some(amount) = money.get("amount_minor").and_then(Value::as_u64) {
-        amount
-    } else {
-        parse_minor_units(money.get("amount").and_then(Value::as_str).ok_or_else(|| {
-            "TEMPUS_INVALID_CONTRACT: money.amount must be a decimal string".to_string()
-        })?)?
-    };
+    let (amount, currency) = validate_money(money)?;
+    let currency = currency.as_str();
     if let Some(currencies) = constraints.get("allowed_currencies") {
-        if !matches_patterns(Some(currencies), currency)? {
+        // Exact codes only.
+        let codes = exact_currency_list(currencies)?;
+        if !codes.contains(&currency) {
             return Ok(false);
         }
     }
@@ -772,9 +1127,12 @@ fn money_allowed(
 }
 
 fn parse_minor_units(value: &str) -> Result<u64, String> {
+    // A decimal point must be followed by one or two digits ("5." is not "5"): executors
+    // read this same grammar, and a gate that accepted more would burn permits they refuse.
     let (whole, fractional) = value.split_once('.').unwrap_or((value, ""));
     if whole.is_empty()
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.contains('.') && fractional.is_empty())
         || fractional.len() > 2
         || !fractional.bytes().all(|byte| byte.is_ascii_digit())
     {
@@ -1181,6 +1539,183 @@ mod tests {
     use super::*;
     use rand::rngs::OsRng;
 
+    #[test]
+    fn money_has_one_reading_for_policy_and_executors() {
+        let ok = |money: Value| validate_money(&money).unwrap();
+        assert_eq!(
+            ok(json!({"amount": "25.5", "asset": "USD"})),
+            (2550, "USD".into())
+        );
+        assert_eq!(
+            ok(json!({"amount_minor": 2550, "currency": "USD"})),
+            (2550, "USD".into())
+        );
+        assert_eq!(
+            ok(json!({"amount": "1.00", "asset": "USD", "beneficiary": "alice"})),
+            (100, "USD".into())
+        );
+        assert_eq!(
+            ok(json!({"amount": "25.50", "amount_minor": 2550, "currency": "USD", "asset": "USD"})),
+            (2550, "USD".into())
+        );
+        for money in [
+            json!({"amount": "1.00", "asset": "USD", "beneficiary": null}),
+            json!({"amount": "1.00", "asset": "USD", "beneficiary": ""}),
+            json!({"amount": "1.00", "asset": "USD", "beneficiary": 7}),
+            json!({"amount": "1.00", "asset": "USD", "beneficiary": ["a"]}),
+            json!({"amount": "5.", "asset": "USD"}),
+            json!({"amount": "0.", "asset": "USD"}),
+            json!({"amount": ".5", "asset": "USD"}),
+            json!({"amount": "5.5.", "asset": "USD"}),
+            json!({"amount": "99999.00", "amount_minor": 1, "asset": "USD"}),
+            json!({"amount": "1.00", "currency": "USD", "asset": "EUR"}),
+            json!({"amount": "1.00", "currency": "USD", "asset": "usd"}),
+            json!({"amount": "1.00", "amount_minor": "100", "asset": "USD"}),
+            json!({"amount": "1.00", "amount_minor": -100, "asset": "USD"}),
+            json!({"amount": 1, "amount_minor": 100, "asset": "USD"}),
+            json!({"amount": "1.00", "currency": 1, "asset": "USD"}),
+            json!({"amount": "1.00", "asset": ""}),
+            json!({"asset": "USD"}),
+            json!({"amount": "1.00"}),
+        ] {
+            let error = validate_money(&money).unwrap_err();
+            assert!(
+                error.starts_with("TEMPUS_INVALID_CONTRACT"),
+                "{money}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn currency_codes_must_be_exact() {
+        for asset in ["usd", "USD ", "USD\u{200b}", "ＵＳＤ", "US*", "*"] {
+            let error = validate_money(&json!({"amount": "1.00", "asset": asset})).unwrap_err();
+            assert!(
+                error.contains("exact 3-letter currency code"),
+                "{asset:?}: {error}"
+            );
+        }
+        let spec = |currencies: Value| {
+            json!({
+                "schema_version": POLICY_BUNDLE_SCHEMA,
+                "policy_version": "v1",
+                "tenant_id": "acme",
+                "constraints": {
+                    "allowed_action_types": ["payment.charge"],
+                    "allowed_resources": ["*"],
+                    "allowed_executors": ["*"],
+                    "max_ttl_seconds": 60,
+                    "max_input_bytes": 1024,
+                    "allowed_currencies": currencies
+                }
+            })
+        };
+        assert!(validate_policy_spec(&spec(json!(["USD", "EUR"]))).is_ok());
+        for currencies in [
+            json!(["US*"]),
+            json!(["*"]),
+            json!(["usd"]),
+            json!(["USD "]),
+        ] {
+            let error = validate_policy_spec(&spec(currencies)).unwrap_err();
+            assert!(
+                error.contains("TEMPUS_POLICY_INVALID") && error.contains("exact currency codes"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stored_dev_allow_all_with_a_non_exact_currency_list_is_stale() {
+        let dev = |currencies: Option<Value>| {
+            let mut constraints = serde_json::Map::new();
+            if let Some(currencies) = currencies {
+                constraints.insert("allowed_currencies".to_string(), currencies);
+            }
+            json!({
+                "policy_version": "tempus.dev-allow-all.v1.1",
+                "tenant_id": "*",
+                "constraints": constraints
+            })
+        };
+        assert!(stale_dev_allow_all(&dev(Some(json!(["*"])))));
+        assert!(stale_dev_allow_all(&dev(Some(json!(["US*"])))));
+        assert!(stale_dev_allow_all(&dev(Some(json!(["usd"])))));
+        assert!(!stale_dev_allow_all(&dev(Some(json!(["USD"])))));
+        assert!(!stale_dev_allow_all(&dev(None)));
+        assert!(!stale_dev_allow_all(&json!({
+            "policy_version": "acme-v1",
+            "tenant_id": "acme",
+            "constraints": {"allowed_currencies": ["*"]}
+        })));
+    }
+
+    #[test]
+    fn payment_actions_require_a_positive_amount() {
+        let paid =
+            json!({"action_type": "payment.charge", "money": {"amount": "1.00", "asset": "USD"}});
+        assert!(reject_payment_without_money("payment.charge", &paid).is_ok());
+        assert!(reject_payment_without_money("github.create_issue", &json!({})).is_ok());
+        for action in ["finance.disburse", "finance.transfer", "payment.charge"] {
+            for intent in [
+                json!({}),
+                json!({"money": null}),
+                json!({"money": {"amount": "0", "asset": "USD"}}),
+                json!({"money": {"amount": "0.00", "asset": "USD"}}),
+                json!({"money": {"amount": "000", "asset": "USD"}}),
+            ] {
+                let error = reject_payment_without_money(action, &intent).unwrap_err();
+                assert!(
+                    error.starts_with("TEMPUS_INVALID_CONTRACT"),
+                    "{action} {intent}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn amount_strings_and_the_minor_unit_boundary() {
+        for amount in [
+            "1e3",
+            "-1.00",
+            "+1.00",
+            "1,00",
+            " 1.00",
+            "1.000",
+            "5.",
+            ".5",
+            "１.００",
+            "184467440737095516.16",
+        ] {
+            let error = validate_money(&json!({"amount": amount, "asset": "USD"})).unwrap_err();
+            assert!(
+                error.starts_with("TEMPUS_INVALID_CONTRACT"),
+                "{amount}: {error}"
+            );
+        }
+        for minor in [json!(-1), json!("100"), json!(true), json!(1.5)] {
+            let money = json!({"amount_minor": minor, "asset": "USD"});
+            let error = validate_money(&money).unwrap_err();
+            assert!(error.contains("amount_minor"), "{money}: {error}");
+        }
+        let constraints = json!({
+            "allowed_currencies": ["USD"],
+            "max_money_amount_minor": 5000
+        });
+        let constraints = constraints.as_object().unwrap();
+        assert!(money_allowed(constraints, &json!({"amount": "50.00", "asset": "USD"})).unwrap());
+        assert!(!money_allowed(constraints, &json!({"amount": "50.01", "asset": "USD"})).unwrap());
+        assert!(
+            money_allowed(constraints, &json!({"amount": "00050.00", "asset": "USD"})).unwrap()
+        );
+        assert_eq!(
+            validate_money(&json!({"amount": "00050.00", "asset": "USD"}))
+                .unwrap()
+                .0,
+            5000
+        );
+    }
+
     struct TestRemoteSigner {
         identity: SignerIdentity,
         key: SigningKey,
@@ -1256,5 +1791,90 @@ mod tests {
             .unwrap();
         let _ = std::fs::remove_file(path);
         assert!(error.contains("TEMPUS_SIGNER_PROVIDER_UNKNOWN"));
+    }
+
+    #[test]
+    fn patterns_match_whole_components_and_reject_glued_stars() {
+        let cases = [
+            ("*", "anything", true),
+            ("*", "https://api.example.com.evil.com/x", true),
+            ("acme/repo", "acme/repo", true),
+            ("acme/repo", "acme/other", false),
+            ("acme/*", "acme/repo", true),
+            ("acme/*", "acme/repo/extra", true),
+            ("vendor-api/*", "vendor-api/credits", true),
+            ("vendor-api/*", "vendor-apifoo", false),
+            (
+                "https://api.example.com/*",
+                "https://api.example.com/v1/users",
+                true,
+            ),
+            (
+                "https://api.example.com/*",
+                "https://api.example.com/v1/users/1",
+                true,
+            ),
+            (
+                "https://api.example.com/*",
+                "https://api.example.com.evil.com/v1",
+                false,
+            ),
+            (
+                "https://api.example.com*",
+                "https://api.example.com.evil.com/x",
+                false,
+            ),
+            (
+                "https://api.example.com*",
+                "https://api.example.com/x",
+                false,
+            ),
+            ("https://api.example.com*", "https://api.example.com", false),
+            ("https://*.example.com/*", "https://a.example.com/v1", true),
+            (
+                "https://*.example.com/*",
+                "https://a.b.example.com/v1/x",
+                true,
+            ),
+            (
+                "https://*.example.com/*",
+                "https://evilexample.com/v1",
+                false,
+            ),
+            (
+                "https://*.example.com/*",
+                "https://example.com.evil.com/v1",
+                false,
+            ),
+            ("host*", "host.evil.com", false),
+            ("host*", "host", false),
+            ("host*", "hostile", false),
+            ("*.example.com", "a.example.com", true),
+            ("*.example.com", "a.b.example.com", true),
+            ("*.example.com", "evilexample.com", false),
+            ("*.example.com", "example.com.evil.com", false),
+            ("*.example.com", "example.com", false),
+            ("/api*", "/apifoo", false),
+            ("/api*", "/api/foo", false),
+            ("/api/*", "/apifoo", false),
+            ("/api/*", "/api/foo", true),
+            ("/api/*", "/api/foo/bar", true),
+            ("/api/*", "/api", false),
+            ("http.post", "http.post", true),
+            ("http.*", "http.post", true),
+            ("http*", "http.post", false),
+            ("vendor-*", "vendor-42", false),
+            ("USD", "USD", true),
+            ("USD*", "USDC", false),
+        ];
+        for (pattern, candidate, expected) in cases {
+            let value = json!([pattern]);
+            let matched = matches_patterns(Some(&value), candidate).unwrap();
+            assert_eq!(matched, expected, "{pattern} vs {candidate}");
+        }
+        // A pattern that does not match does not change another pattern in the list.
+        let both = json!(["https://api.example.com*", "https://api.example.com/*"]);
+        assert!(matches_patterns(Some(&both), "https://api.example.com/v1").unwrap());
+        assert!(!matches_patterns(Some(&both), "https://api.example.com.evil.com/v1").unwrap());
     }
 }

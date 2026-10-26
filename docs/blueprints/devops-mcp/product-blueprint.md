@@ -1,6 +1,6 @@
 # B2A Gate for DevOps Agents over MCP — Product Blueprint
 
-*Based on the B2A (Bot-to-Agent / Bot-to-Action) toll gate pattern from [tempus-ddb](https://github.com/elbuilder77/tempus-ddb), adapted for custom and standard Model Context Protocol (MCP) servers controlling GitHub PRs, repository changes, and Slack/Discord alerts.*
+*Based on the B2A (Bot-to-Agent / Bot-to-Action) toll gate pattern from [tempus-ddb](https://github.com/Julio-Patron/tempus-ddb), adapted for custom and standard Model Context Protocol (MCP) servers controlling GitHub PRs, repository changes, and Slack/Discord alerts.*
 
 ---
 
@@ -12,7 +12,7 @@
 ## The Problem
 Modern autonomous agent runtimes—including **OpenClaw**, **Hermes Agent (Nous Research)**, **Cursor**, **Claude Desktop**, **Windsurf**, **OpenHands**, and **Aider**—interact with external environments through the Model Context Protocol (MCP) or custom function calling.
 
-Today, teams commonly expose MCP tools that directly open GitHub Pull Requests, merge code, or post alerts to Slack. If those MCP tools hold `GITHUB_TOKEN`, GitHub App private keys, or `SLACK_BOT_TOKEN` in the same memory space or process handling the agent:
+Today, teams commonly expose MCP tools that directly open GitHub Pull Requests, merge code, or post alerts to Slack. If those MCP tools hold `GITHUB_TOKEN` (a personal access token), or `SLACK_BOT_TOKEN` in the same memory space or process handling the agent:
 1. **Prompt Injection & Indirect Poisoning:** An agent reading an untrusted GitHub issue, pull request diff, or dependency manifest containing malicious hidden instructions can be tricked into exfiltrating data, opening backdoored PRs, or pinging unauthorized webhooks.
 2. **Hallucination & Infinite Loops:** A malfunctioning loop in an autonomous agent (e.g. OpenClaw or OpenHands running overnight) can spam dozens of duplicate PRs or flood internal Slack channels.
 3. **Ambient Authority:** The agent holds *ambient privilege*. Any tool call it generates is executed immediately by the MCP server without cryptographic verification of intent or policy compliance.
@@ -41,7 +41,7 @@ Introduce a cryptographic toll gate between the agent runtime and destructive/st
 
 1. **Intent Signing:** The agent signs its exact intended action (`github.create_pull_request`, target repo `acme/infrastructure`, branch, title, diff hash) using its local Ed25519 workload key.
 2. **Policy Evaluation & Single-Use Permit:** The Gate validates the intent against a deterministic, signed policy bundle (permitted repos, allowed branches, rate ceilings, approved executors). If valid, it mints an expiring, single-use signed permit.
-3. **Isolated MCP Execution:** An isolated executor process—which exclusively holds `GITHUB_TOKEN` or GitHub App credentials—validates and atomically consumes the permit. It executes the real write against GitHub.
+3. **Isolated MCP Execution:** An isolated executor process—which exclusively holds `GITHUB_TOKEN` (a personal access token; GitHub App credentials are not supported yet, see ROADMAP)—validates and atomically consumes the permit. It executes the real write against GitHub.
 4. **Tamper-Evident Receipts:** Gate and Executor dual-sign an immutable cryptographic receipt, stored in an append-only event stream verified offline.
 
 ---
@@ -59,8 +59,8 @@ Introduce a cryptographic toll gate between the agent runtime and destructive/st
 |---|---|---|
 | **Trust Domain** | The same process inspects input, checks rules, and executes. | **Decoupled:** The Gate authorizes; a distinct isolated process executes. |
 | **Credential Storage** | `GITHUB_TOKEN` lives in memory accessible to the tool host. | **Strictly Isolated:** Tokens live only in the executor process; never visible to the agent or chat prompt. |
-| **Replay & Loop Resistance** | Repeated tool calls within quota limits succeed repeatedly. | **Cryptographic Single-Consumption:** Once consumed, the permit is permanently spent. Retries fail closed. |
-| **Tamper Evidence** | Server log lines (easily forged, truncated, or lost). | **Dual-Signed Receipt:** Mathematically verifiable offline without trusting server logs. |
+| **Replay & Loop Resistance** | Repeated tool calls within quota limits succeed repeatedly. | **Cryptographic Single-Consumption:** Once consumed, a second outcome for the same permit is rejected (single-instance executor). |
+| **Tamper Evidence** | Server log lines (easily forged, truncated, or lost). | **Dual-Signed Receipt:** Verifiable offline with the gate's pinned public key (`verify-receipt` / `verify-bundle`), without trusting server logs; it detects altered or forged receipts, not omitted ones. |
 | **Prompt Injection Defense** | System prompts ("Do not touch repo X") can be bypassed by jailbreaks. | **Mathematical Constraint:** The Gate rejects any intent outside signed policy, regardless of model conviction. |
 
 ---
@@ -85,7 +85,7 @@ Software engineering agents generating pull requests can route their output thro
 
 Tempus DDB already ships the necessary components out-of-the-box:
 * **Packaged Reference Executors:**
-  * `tempus-github-executor`: Native support for Personal Access Tokens and installation-scoped **GitHub Apps** (`issues: write`, `pull_requests: write`) with automatic token rotation, HTTP redirect blocking (`_RejectRedirects`), and error sanitization.
+  * `tempus-github-executor`: GitHub writes (issues, pull requests) with a Personal Access Token (or GitHub Enterprise API URL) held only in the executor environment. The HTTP, GitHub and Slack transports refuse HTTP redirects (a 3xx is not followed and `Authorization` is not forwarded; the error names only the status code and target host). This does not cover DNS/IP-based SSRF filtering, and custom transports are the integrator's responsibility. GitHub App installation tokens and automatic rotation are **not implemented** (see ROADMAP).
   * `tempus-slack-executor`: Scoped Slack message and alert dispatch.
 * **Autonomous MCP Server:** Exposed via `tempus mcp start` with workspace boundary lockdown (`TEMPUS_WORKSPACE`) and ambient tool suppression.
 * **Quickstart Verification:** Run `tempus quickstart` to test end-to-end local permit issuance in seconds.

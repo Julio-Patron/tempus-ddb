@@ -47,14 +47,25 @@ class StubFailingAdapter:
 
 
 class StubAmbiguousAdapter:
-    """Stub adapter that simulates network timeouts or server 500s."""
+    """Stub adapter that raises TimeoutError."""
 
     @property
     def supported_actions(self) -> Set[str]:
         return {"custom:timeout"}
 
     def execute_action(self, intent: Dict[str, Any]) -> ExecutionResult:
-        raise RuntimeError("HTTP 500 Internal Server Error: Gateway timeout")
+        raise TimeoutError("timed out")
+
+
+class StubValidationAdapter:
+    """Stub adapter that raises RuntimeError."""
+
+    @property
+    def supported_actions(self) -> Set[str]:
+        return {"custom:echo"}
+
+    def execute_action(self, intent: Dict[str, Any]) -> ExecutionResult:
+        raise RuntimeError("HTTP 500 Internal Server Error: amount 500.00")
 
 
 def _setup_gate_and_agents(tmpdir, tenant_id="tenant-runtime-test"):
@@ -78,6 +89,7 @@ def _setup_gate_and_agents(tmpdir, tenant_id="tenant-runtime-test"):
         exec_id = json.load(f)["public_key"]
 
     gate.register_agent(gate_id, "gate-root", '{"can_delegate":true}')
+    gate.install_allow_all_dev_policy()  # explicit dev opt-in (default is deny-all)
     gate.register_agent(agent_id, "test-agent", "{}")
     gate.register_agent(exec_id, "test-executor", "{}")
 
@@ -215,3 +227,27 @@ def test_executor_runtime_ambiguous_network_failure():
         with pytest.raises(UnknownExecutionError) as exc_info:
             runtime.execute_permit(permit, adapter)
         assert "UNKNOWN" in str(exc_info.value)
+
+
+def test_validation_error_is_failed_not_unknown():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        tenant_id = "tenant-runtime"
+        gate, gate_id, agent_id, exec_id, exec_db, exec_key, agent_key = (
+            _setup_gate_and_agents(tmpdir, tenant_id)
+        )
+
+        runtime = ExecutorRuntime(
+            executor_db=exec_db,
+            executor_keyfile=exec_key,
+            trusted_gate_id=gate_id,
+            trusted_tenant_id=tenant_id,
+        )
+        permit = _create_permit(
+            gate, tenant_id, agent_id, agent_key, "custom:echo", "idemp-validation-500"
+        )
+
+        receipt = json.loads(runtime.execute_permit(permit, StubValidationAdapter()))
+        assert receipt["status"] == "FAILED"
+        authorization_id = json.loads(permit)["authorization"]["authorization_id"]
+        state = json.loads(runtime.raw_executor.get_execution_state(authorization_id))
+        assert state["status"] == "FAILED"

@@ -2,6 +2,334 @@
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.5.4] - 2026-10-25
+
+Security hardening of the 0.5 line. Every change below turns a previously accepted
+input into a refusal or a signed denial, except the leading or middle `*` component
+noted under pattern matching. Upgrade notes: README section "Common cases that now
+break, and how to fix them".
+
+Evidence (receipts, traces, bundles) produced by a 0.5.3 gate that used the dev
+allow-all policy embeds that policy's `allowed_currencies: ["*"]` bundle, so
+`verify-receipt`, `verify-trace` and `verify-bundle` report it as `INVALID` after this
+upgrade, and a permit issued before the upgrade under that policy cannot be committed
+(`TEMPUS_AUTHORIZATION_INVALID`). Finish or discard in-flight dev permits before
+upgrading. Policies with exact currency codes are not affected.
+
+### Security: pattern matching now respects component boundaries
+
+Pattern matching now respects component boundaries (`.` and `/`). A `*` matches only
+as a whole component. A pattern that is not in that form matches nothing. This applies
+to policy pattern lists, the payment beneficiary allowlist, and the HTTP domain
+allowlist. A `*` glued to text (`host*`, `vendor-*`) used to match as a prefix and now
+matches nothing. A `*` that is its own leading or middle component (`*.example.com`,
+`https://*.example.com/*`) used to be a dead literal and now matches that component, so
+review existing lists for entries of that form before upgrading.
+
+Migration notes are in the README section "Common cases that now break, and how to
+fix them". This change is independent of the transport-outcome classification; both
+ship in 0.5.4.
+
+### Security: ambiguous transport outcomes are classified by exception type
+
+An ambiguous transport outcome is recorded as `UNKNOWN` and is not retried. A
+definitive failure, including a validation error, stays `FAILED`. Classification
+uses the exception type. The HTTP, payment, and Slack adapters follow this rule.
+
+Migration notes are in the README section "Common cases that now break, and how to
+fix them". This change is independent of the pattern-matching change; both ship in
+0.5.4.
+### Breaking changes when upgrading from 0.5.3
+- **Currency patterns and wildcards.** `allowed_currencies` accepts only exact 3-letter
+  codes. A pattern or a wildcard is rejected when the policy is loaded
+  (`TEMPUS_POLICY_INVALID`). Omit the list to leave currency unconstrained, or name each
+  code. A stored dev allow-all policy (`tempus.dev-allow-all.v1.*`) whose currency list is
+  not exact codes fails closed with `TEMPUS_POLICY_INVALID`. The gate does not rewrite
+  it. The error says to run `tempus install-policy --allow-all-dev` (or
+  `TempusDDB.install_allow_all_dev_policy()`), which is the only way that stored policy
+  is replaced. Any other policy with a non-exact currency list is also rejected and is
+  not rewritten.
+- **Lowercase currency codes** are rejected. Send an exact uppercase code.
+- **Payment actions** (`finance.disburse`, `finance.transfer`, `payment.charge`) without a
+  `money` object, with null money, or with amount 0 are refused
+  (`TEMPUS_INVALID_CONTRACT`). Nothing is signed.
+- **Duplicate JSON object keys** are refused with `DUPLICATE_JSON_KEY` by the gate
+  (`parse_canonical`), the Rust executor and the Python executor runtime.
+- **Permits that only carried `authorization.intent`.** The executor runtime uses the
+  verified top-level `intent` and does not read `authorization.intent`.
+
+### Documentation
+- README / CHANGELOG: a repeated JSON object key is rejected with `DUPLICATE_JSON_KEY` by
+  verifiers and by the gate (`parse_canonical`), the Rust executor and the Python executor
+  runtime. A section "Common cases that now break, and how to fix them" covers
+  `requested_at` from `time.time()`, numeric `money.amount`, floats in `input`, decimals in
+  metadata or policies, and `NaN`/`Infinity`/`-0` from the CLI.
+- Legacy ledger (`tempus record` / `tempus verify`, `TEMPUS_LEGACY_TOOLS=1`) is documented
+  as **not verifiable evidence**: it accepts floats and huge integers and hashes the parsed
+  value, so an edited copy (`1e2` -> `100.0`, `...890` -> `...891`) still validates. Decision:
+  document rather than apply the exact-number rule there (see README, "Legacy ledger"):
+  it is a voluntary flight recorder, enforcing the rule in `verify` would invalidate
+  existing ledgers, and enforcing it only in `record` would leave old records and `verify`
+  unchanged. Evidence belongs in the signed B2A flow.
+- README: a complete, runnable CLI walkthrough (policy, `request-action`, `commit-outcome`,
+  `verify-receipt` / `verify-trace --strict`, `export-bundle` / `verify-bundle`), where the
+  executors' `permit.json` comes from, what `VERIFIED` does and does not mean, and install
+  from the clone until a release includes default-deny and independent verification (PyPI
+  0.5.3 does not). Fixed the demo link that lacked `https://`.
+
+### Security
+- Discrepancy between the fields the policy and the executor read; update to 0.5.4.
+
+### Documentation (forge 5)
+- README: minor units assume two decimals (wrong for JPY, BHD, KWD) and the payment executor
+  is not a complete payment control (per-intent checks only, mock transport).
+- Informational, documented and **not fixed**: **H4** ports are not restricted by the policy
+  prefix or the HTTP allowlist; **D2-a** the output conversion still has no time limit (a
+  hostile custom adapter `__repr__` can block the executor); **D2-b** a large legitimate
+  output is recorded as a degraded summary without a digest of the full output.
+
+### Security: money parity between the gate and the payment executor (forge 5)
+- **N5-1: `"5."`.** The gate's `parse_minor_units` accepted a decimal point with no digits
+  after it; the executor refused it, so the permit was consumed and the receipt FAILED. The
+  gate now refuses `"5."` (a `.` needs one or two digits) with `TEMPUS_INVALID_CONTRACT`.
+  `tests/test_money_amount_parity.py` runs the same amount strings through the real gate
+  and through the executor and requires equal verdicts.
+
+- **N5-3: beneficiary type.** Without `allowed_beneficiaries` nothing checked the type of
+  `money.beneficiary`, and the executor paid `str(None)`, i.e. the string `"None"`, for a
+  `null`. The gate (`validate_money`) and `PaymentActionAdapter` now require a non-empty
+  string whenever the field is present or needed; the executor never stringifies it.
+  Still open: a *missing* beneficiary passes the gate when `allowed_beneficiaries` is not
+  constrained (the field is generic to `money`), and the payment executor then refuses it.
+
+- **N5-2: Python `canonical_money`.** It used `\d` (any Unicode digit: `"٣"`, `"５"`) and had no
+  u64 cap, while the gate reads ASCII `0-9` only and caps minor units at u64. It now uses
+  `[0-9]`, refuses more than `u64::MAX` minor units (and absurdly long digit strings) with
+  `money.amount is too large`. The parity test also covers these spellings.
+
+### Security: the HTTP executor fails closed (forge 5)
+- **H1: credentials without an allowlist.** An `Authorization` header requires a domain
+  allowlist. Pattern matching for those entries respects component boundaries.
+  Now `HttpActionAdapter` (and therefore `tempus-http-executor`) refuses to start, with a
+  clear message and no traceback, when an auth header (argument, `--auth-header` or
+  `HTTP_EXECUTOR_AUTH_HEADER`) has no non-empty domain allowlist; `*` is the explicit way to
+  accept every host. The CLI builds the adapter before it touches the permit, so a refusal
+  consumes nothing. **Breaking** for setups that passed an auth header without domains.
+- `tempus install-policy` prints a WARNING (it still installs) for `allowed_resources` URL
+  patterns of the form `http(s)://host*` with no `/` between the host and the `*`.
+- README: the executor example now pins `--allowed-domains`, and the prefix warning lives next
+  to it. Informational (documented in the README): ports are not restricted by the policy
+  prefix or the allowlist (H4).
+
+- **H2: SSRF filter by address, with pinned connections.** Without an allowlist the executor
+  connected to `127.1`, `2130706433`, `0x7f000001`, `2852039166`/`0xa9fea9fe`
+  (169.254.169.254), `10.1`, `192.168.1`, `https://0/`, `100.64.0.1`: only canonical IPs were
+  checked. Hosts are now read like the OS resolver reads them (`inet_aton`), and loopback,
+  private, link-local, CGNAT, unspecified, multicast, reserved and cloud-metadata addresses
+  (AWS/GCP/Azure/Alibaba/Oracle) are refused also through IPv6 (only global unicast is
+  accepted; IPv4-mapped and NAT64 are judged by the IPv4 inside; 6to4/Teredo refused).
+  Names are resolved once, every answer must be allowed, and the socket connects to the
+  validated IP (DNS-rebinding safe; TLS verifies the name). Percent escapes in the host and
+  invalid ports are refused. A wildcard allowlist no longer opens blocked addresses.
+  Limits (README): not pinned through an environment proxy, ports unrestricted (H4),
+  allowlisted internal names that resolve to private space are refused too.
+
+- **H3: dot segments in the HTTP path.** `https://api.example.com/v1/../admin` and
+  `/v1/%2e%2e/admin` matched the policy `https://api.example.com/v1/*` and were sent as is.
+  The path is now percent-decoded until stable (max 5 rounds, more is refused) and refused if
+  any segment is `.` or `..` (also `..;x`), or if it contains a backslash. Same rule the
+  GitHub executor already had.
+
+- **S1: Slack channel.** `resource` went to Slack as `channel` unvalidated; with the policy
+  `C0123*`, `C0123,C9999` and `#alerts,#general` were sent to several conversations. The
+  executor now accepts only one channel ID (`[CGD][A-Z0-9]{2,31}`) or `#name`
+  (`[a-z0-9][a-z0-9_-]{0,79}`) and answers `FAILED` / `TEMPUS_SLACK_BINDING_REJECTED` with a
+  clear message, without calling Slack, for anything else (commas, spaces, newlines, Unicode
+  look-alikes, non-strings).
+
+### Security: audit of "the policy/validation reads X, the executor uses Y"
+Every field an executor uses was traced to what the policy (or the executor's own check)
+evaluates. Policy evaluates: `tenant_id`, `action_type`, `resource` (textual patterns),
+`ttl`, `input` (only size and integer-only numbers) and `money`. Executors also re-run the
+policy on the permit's intent before consuming it, and read the same intent text.
+- Fixed: discrepancy between the fields the policy and the executor read; update to 0.5.4.
+- Fixed, HTTP executor: it validated `resource.strip()` but requested the raw string, and
+  `urlsplit` drops tabs/newlines that urllib keeps. A URL with whitespace, control
+  characters, backslashes or credentials (`user:pw@host`, `host@other`) is now refused, and
+  the validated string is the one requested.
+- Fixed, GitHub executor: `owner/repository` accepted `.` and `..`, so `acme/..` requested
+  `/repos/acme/../issues`. Dot segments are refused (names that merely contain dots work).
+- Fixed, payment executor: its beneficiary allowlist compared a stripped, lower-cased value
+  while the transport received the original (`"ALICE "` passed for `"alice"`). It now
+  compares the value as written. **Behaviour change:** `allowed_beneficiaries` /
+  `PAYMENT_ALLOWED_BENEFICIARIES` are case-sensitive and compare the value as written.
+  Wildcards on that allowlist follow the same component rules as the policy (see the
+  unreleased note above): a `*` that is not its own component authorizes nobody.
+- Checked, no mismatch: `action_type` (policy, runtime support check, HTTP method and
+  GitHub endpoint use the same string), `resource` for Slack (channel) and GitHub, the
+  permit's `intent` (Rust and Python read the same text; the executor re-evaluates the
+  policy on it), `money.beneficiary` (policy and executor read the same field).
+- Not evaluated by the policy by design, so not a mismatch but worth knowing: the contents
+  of `input` (message text, issue title, PR `head`/`base`, HTTP body). Constrain them in the
+  executor or by `action_type`/`resource`. `allowed_resources` patterns were textual
+  prefixes. Pattern matching now respects component boundaries; write `*` as its own
+  component.
+
+### Security: verifier hardening (independent forge findings)
+- **Duplicate JSON keys are INVALID.** `serde_json` kept the last value of a repeated key
+  (`"amount":"9999.00","amount":"25.00"` verified), so a document could verify while a
+  first-wins parser or a human read something else. `verify-receipt`, `verify-bundle`,
+  `verify-trace` (stored documents) and `checkpoint verify` now reject a repeated object
+  key at any depth: status `INVALID`, error / reason code `DUPLICATE_JSON_KEY`, exit 2.
+- **Unknown fields are INVALID.** An unsigned extra field (`"note":"approved by CFO"`) at
+  the top level of a bundle, in the `trace` wrapper or in the bundle's `checkpoint` wrapper
+  verified; the other levels already rejected them. These wrappers now allow only their
+  schema fields: anything else yields `INVALID` with `UNKNOWN_FIELD (<path>)`.
+- **An empty `--gate-public-key` is a usage error.** `verify-trace --gate-public-key ""`
+  and `checkpoint verify --gate-public-key ""` (typically an unset `$GATE_KEY`) silently
+  fell back to the unpinned, non-independent mode and exited 0. An empty or whitespace-only
+  `--gate-public-key` / `--executor-public-key` now exits 1 on every verifier; only
+  omitting the option means "not pinned". In Python an empty string already raised;
+  `verify_trace(id, None)` remains the documented unpinned mode.
+- **Key files are parsed strictly.** A `--gate-public-key` / `--executor-public-key` FILE
+  holding JSON used the last of any repeated key and fell through from an empty `public_key`
+  to `gate_public_key` (`{"public_key":"","gate_public_key":ATTACKER}` pinned the attacker's
+  key). A repeated key, a candidate field (`public_key`, `gate_public_key`) that is empty or
+  not a string, a non-object document, or two candidate fields with different keys is now a
+  usage error (exit 1). Files with one key, or both fields holding the same key, work as
+  before, including a gate `keys.json` (only its public part is read).
+- **Signed documents hold only exact numbers.** `serde_json` reads every float, and every
+  integer outside i64/u64, as an f64. The gate rounded such numbers before signing (an
+  outcome `output` of `123456789012345678901234567890` was signed as `1.2345678901234568e29`)
+  and the verifier accepted any text with the same f64 (`...567891`, `...567000`, `...890.0`;
+  `0.1` as `0.10` or `1e-1`). Now only integers in the i64/u64 range are allowed as numbers
+  in anything the gate signs or verifies:
+  - The gate refuses them when they arrive (`NON_EXACT_NUMBER: ... at $.path`, exit 1 on the
+    CLI): outcomes (`commit-outcome`, executor `complete_execution`), intents, agent
+    metadata and policies. Decimals and larger values must be strings (`"25.00"`,
+    `"123456789012345678901234567890"` are unaffected).
+  - `verify-receipt`, `verify-bundle`, `verify-trace` and `checkpoint verify` report such a
+    document as `INVALID` (`AUTHORIZATION_NON_EXACT_NUMBER` / `EXECUTION_NON_EXACT_NUMBER
+    (path)`, or reason code `NON_EXACT_NUMBER`), including bundles signed before this change.
+  - `NaN`, `Infinity`, `-Infinity` and numbers that overflow a double (`1e400`) are reported
+    with the `NON_EXACT_NUMBER` code on the CLI (`--intent`, `--outcome`, `--policy`,
+    `register-agent --metadata`). They used to say "must be valid JSON" because Python turned
+    them into `Infinity` before the gate saw them. In the gate itself (Python/Rust API called
+    with raw text), `1e400` is `NON_EXACT_NUMBER`, while `NaN` / `Infinity` / `-Infinity`
+    are not JSON at all and are reported as "must be valid JSON" (an earlier version of this
+    entry said otherwise). `-0` is
+    refused too: Python reads it as `0`, so it would be signed as `0` and silently rewritten
+    (write `0`). Decision: reject rather than document, it is one check and removes the
+    only spelling that changed on the way.
+  - Behaviour change: an intent whose `input` holds a float used to produce a signed `BLOCKED`
+    (`POLICY_NON_DETERMINISTIC_INPUT`); it is now refused before anything is signed.
+  - The packaged executors (`ExecutorRuntime`) keep working with downstream answers that
+    contain floats or huge integers: the payload is converted (`0.1` -> `"0.1"`, a 30-digit
+    integer -> its exact digits) before the outcome is signed. The conversion is applied to
+    the value Python already parsed, so a float spelled `19.990` is recorded as `"19.99"`.
+  - **A custom adapter never loses the effect to its own result type.** `Decimal` is
+    recorded as its exact string (`Decimal("19.990")` -> `"19.990"`), `datetime`/`date`/`time`
+    as ISO 8601, and bytes, sets or arbitrary objects as a bounded `repr` (512 characters).
+    The conversion is bounded: at most 100,000 values (a shared reference counts every time
+    it is walked, so `x = [x, x]` nested 40 times degrades in milliseconds instead of
+    expanding to 2^40 nodes and exhausting memory) and 4 MiB of string and key characters;
+    the degraded marker describes the payload with a work-bounded summary and never expands
+    it. Not solved: a `__repr__` / `__str__` that sleeps or loops cannot be interrupted from
+    Python; the conversion has a size bound, not a time bound, and runs adapter code only for
+    objects the adapter itself returned.
+    **The degraded marker is visible and cannot be written by an adapter.** The verifiers
+    (`verify-receipt`, `verify-bundle`, `verify-trace`) add `output_degraded`: `true` when
+    the verified outcome's `output` carries `_tempus_output_degraded: true`, `false`
+    otherwise, `null` when nothing verified or there is no outcome; the CLI also prints a
+    NOTE on stderr. Through the runtime an adapter may not use the key `_tempus_output_degraded`
+    anywhere in its result (its result is degraded, with the reason "reserved key"), so there
+    the marker is always the runtime's. Limit: whoever holds the executor key can sign an
+    output with that key by hand; it cannot be told apart cryptographically from the
+    runtime's and is shown the same way. The flag is a signal, not proof of provenance, and
+    `--require-execution` still only looks at the signed status.
+    Keys that are not strings become `str(key)`; if two keys would become the same JSON key
+    (`{1: "a", "1": "b"}`, which used to keep only `"b"` without a word) the result is
+    degraded instead. (`{1: "a", True: "b"}` is one key in Python itself, before the runtime
+    sees it.)
+    A result that cannot be converted at all (nesting beyond 64 levels, cycles, too large, key
+    collisions) is recorded
+    with the adapter's own status and the marker
+    `{"_tempus_output_degraded": true, "reason": ..., "repr": <bounded>}`. Before, such a
+    result made the runtime record `FAILED` (`EXECUTION_EXCEPTION`) although the external
+    action had happened. Criterion: a result the adapter *returns* is evidence about an
+    effect that already occurred; degrading its representation is acceptable, recording a
+    failure for a success is not. This includes conversion code that raises inside the
+    adapter's own objects (`__repr__`, `__str__`, `isoformat`, `items`, `__iter__` of
+    subclasses of `float`, `Decimal`, `datetime`, `dict`, `list`). An exception *raised by
+    the adapter* is not covered: the runtime cannot know whether the effect happened, so it
+    records `FAILED` (`EXECUTION_EXCEPTION`), or `UNKNOWN` for ambiguous transport errors.
+- **VERIFIED now says what was decided and executed.** Results of `verify-receipt`,
+  `verify-trace` and `verify-bundle` carry `decision` (`ALLOWED`/`BLOCKED`) and
+  `execution_status` (`SUCCEEDED`/`FAILED`, `null` when there is no outcome); both are
+  `null` unless the whole result verifies. New flags make the exit code mean more than
+  "the signatures are fine": `--require-execution` (a verified outcome with status
+  `SUCCEEDED`), `--require-decision ALLOWED|BLOCKED` and, on `verify-bundle`,
+  `--require-checkpoint` (a checkpoint that verifies and includes the permit and outcome).
+  An unmet requirement exits 2 with status `INVALID` and `REQUIREMENT_NOT_MET (...)`.
+  Without the flags a BLOCKED bundle, a FAILED outcome or a bundle with no execution or
+  checkpoint still verifies, as before.
+- **Usage errors exit 1, INVALID exits 2.** `argparse` exits 2 on a missing or invalid
+  argument, the same code as `INVALID`, so a script could not tell a typo from a forged
+  receipt. Every `tempus` usage error (missing required argument, unknown option or
+  command, bad `--require-decision` value) now exits 1; `--help` still exits 0. Breaking
+  for callers that treated exit 2 from a missing argument as usage.
+
+### Security: executors no longer follow redirects
+- The HTTP, GitHub and Slack executor transports used `urllib.request.urlopen`, which
+  follows 3xx responses and forwards the `Authorization` header to the new host. They now
+  share one opener (`tempus_ddb._http`) that refuses every redirect: the request is not
+  repeated, credentials are not forwarded, and the executor reports a failed outcome
+  (`http_status` / `GITHUB_HTTP_<code>` / `error`) whose message names only the status code
+  and the redirect target host (no `Location` path, query or credentials). Not covered by
+  this change: DNS or IP based SSRF filtering (the allowlist is by host name) and the
+  behaviour of custom transports passed in by an integrator.
+
+### Security / Breaking
+- **Default-deny.** The gate no longer seeds the allow-all `tempus.baseline.v1` (`"*"`)
+  policy on `init`, first agent registration or first use, and tenants without their own
+  policy no longer fall back to it. With no installed policy the gate issues a signed
+  `BLOCKED` receipt with reason code `POLICY_NOT_INSTALLED` (verifiable by `verify-trace`;
+  such a receipt can never verify as `ALLOWED`). A baseline already present in an older
+  database is ignored.
+- **Opt-in development mode.** `tempus init --allow-all-dev`, `tempus install-policy
+  --allow-all-dev`, `TempusDDB.install_allow_all_dev_policy()` (Python, `UserWarning`) and
+  `SqliteStorage::install_allow_all_dev_policy()` / `tempus-ddb-core install-allow-all-dev`
+  (Rust) install a signed allow-all policy, versioned `tempus.dev-allow-all.v1.<ts>`. It is
+  not exposed over MCP. `tempus doctor` fails `active_policy` while only it is active.
+- Migration: install a real policy, or opt in with `--allow-all-dev` for development.
+
+### Added: independent verification
+- **Pinned gate key.** `tempus verify-trace --gate-public-key HEX|FILE [--executor-public-key ...]
+  [--strict]` verifies a trace against a gate public key supplied by the verifier. A database
+  signed by anyone else (a fully forged DB with the attacker's own gate, agent and executor
+  keys) is `INVALID` (`GATE_KEY_NOT_PINNED`); before, it verified against its own root of trust.
+- **`tempus verify-receipt`** verifies a standalone trace, permit or outcome JSON with no
+  database. **`tempus checkpoint verify --gate-public-key`** needs only the public key (no
+  keyfile, no database). Python: `verify_receipt`, `verify_checkpoint`,
+  `TempusDDB.verify_trace(id, gate_public_key=None, executor_public_keys=None)`; Rust:
+  `verify_receipt`, `verify_checkpoint`, `SqliteStorage::verify_trace_pinned`,
+  `tempus-ddb-core verify-receipt`.
+- **Evidence bundle** (`tempus.evidence-bundle.v1`): `tempus export-bundle --action-id ID --out
+  FILE [--create-checkpoint] [--max-stream-events N] [--force]` writes one JSON file with the
+  trace, signed policy and, if one covers the action, the latest signed checkpoint with its
+  event stream; no private keys. `tempus verify-bundle --bundle FILE --gate-public-key HEX|FILE
+  [--executor-public-key ...]` verifies it with no database (exit 0 VERIFIED, 2 INVALID, 1
+  usage), including that the permit and outcome events are in the checkpointed ledger. Python:
+  `TempusDDB.export_bundle`, `verify_bundle`; Rust: `SqliteStorage::export_bundle`,
+  `verify_bundle`, `tempus-ddb-core export-bundle|verify-bundle`. Limits (completeness,
+  global single use, gate-key compromise, privacy) are documented in the README.
+- Trace verification now also rejects a trace whose unsigned `action_id` wrapper differs from
+  the signed one (`TRACE_ACTION_ID_MISMATCH`).
+- Verification results now carry a `kind` and a `trust` object (`PINNED_GATE_KEY`, independent,
+  with `not_checked`; or `DATABASE_SELF_ATTESTED`, `"independent": false`). Without a pinned
+  key the CLI prints a "NOT INDEPENDENT" warning; `--strict` refuses to run unpinned.
 ### Added
 - The release workflow now generates CycloneDX SBOMs for the Rust crate
   (`cargo-cyclonedx` 0.5.9) and the Python package (`cyclonedx-bom` 7.5.0),

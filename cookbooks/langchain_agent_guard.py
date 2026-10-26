@@ -48,6 +48,7 @@ class TempusToolGuard:
 
         # Register identities in Tempus ledger
         self.gate.register_agent(self.gate_id, "tempus-gate", '{"can_delegate":true}')
+        self.gate.install_allow_all_dev_policy()  # demo only: explicit allow-all (default is deny-all)
         self.gate.register_agent(self.agent_id, "langchain-agent", "{}")
         self.gate.register_agent(self.executor_id, "isolated-tool-executor", "{}")
 

@@ -210,6 +210,7 @@ def test_b2a_python_api_round_trip(tmp_path):
 
     db = TempusDDB(str(db_path), str(gate_keyfile))
     db.register_agent(gate_id, "tempus-gate", json.dumps({"can_delegate": True}))
+    db.install_allow_all_dev_policy()  # explicit dev opt-in (default is deny-all)
     db.register_agent(agent_id, "agent", "{}")
     db.register_agent(executor_id, "executor", "{}")
 

@@ -85,6 +85,7 @@ def setup_test_env(tmp_path: Path):
         executor_id = json.load(f)["public_key"]
 
     gate.register_agent(gate_id, "tempus-gate", '{"can_delegate":true}')
+    gate.install_allow_all_dev_policy()  # explicit dev opt-in (default is deny-all)
     gate.register_agent(agent_id, "test-agent", "{}")
     gate.register_agent(executor_id, "test-executor", "{}")
 

@@ -87,6 +87,7 @@ def _setup_gate_and_agents(tmpdir, tenant_id="tenant-test"):
         exec_id = json.load(f)["public_key"]
 
     gate.register_agent(gate_id, "gate-root", '{"can_delegate":true}')
+    gate.install_allow_all_dev_policy()  # explicit dev opt-in (default is deny-all)
     gate.register_agent(agent_id, "test-agent", "{}")
     gate.register_agent(exec_id, "test-executor", "{}")
 
@@ -107,6 +108,7 @@ def test_http_executor_adapter():
             trusted_gate_id=gate_id,
             trusted_tenant_id=tenant_id,
             auth_header="Bearer secret-isolated-token",
+            allowed_domains={"api.example.com"},
             transport=transport,
         )
 

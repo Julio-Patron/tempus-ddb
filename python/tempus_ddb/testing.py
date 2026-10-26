@@ -5,7 +5,7 @@ custom mediated executor adapter satisfies the Tempus zero-trust security invari
 - Atomic single-use permit consumption
 - Strict credential isolation
 - Deterministic outcome receipts
-- Fail-closed crash recovery and UNKNOWN handling
+- Crash recovery that records UNKNOWN instead of retrying
 """
 
 import json
@@ -61,6 +61,24 @@ class AdapterConformanceHarness:
         gate.register_agent(gate_id, "gate-root", '{"can_delegate":true}')
         gate.register_agent(agent_id, "agent-conformance", "{}")
         gate.register_agent(exec_id, "exec-conformance", "{}")
+        # The gate denies everything without a policy. This throwaway harness gate gets
+        # an explicit policy scoped to the conformance tenant and its own executor.
+        gate.install_policy(
+            json.dumps(
+                {
+                    "schema_version": "tempus.policy-bundle.v1",
+                    "policy_version": "tempus.conformance-harness.v1",
+                    "tenant_id": self.tenant_id,
+                    "constraints": {
+                        "allowed_action_types": ["*"],
+                        "allowed_resources": ["*"],
+                        "allowed_executors": [exec_id],
+                        "max_ttl_seconds": 86400,
+                        "max_input_bytes": 65536,
+                    },
+                }
+            )
+        )
 
         runtime = ExecutorRuntime(
             executor_db=exec_db,
@@ -128,11 +146,13 @@ class AdapterConformanceHarness:
                 env["runtime"].execute_permit(permit_1, adapter)
             except Exception as exc:
                 replay_failed = True
-                if not ("consumed" in str(exc).lower() or "already" in str(exc).lower()):
+                if not (
+                    "consumed" in str(exc).lower() or "already" in str(exc).lower()
+                ):
                     raise AssertionError(f"Unexpected replay error message: {exc}")
             if not replay_failed:
                 raise AssertionError(
-                    "Second execution of consumed permit MUST fail closed"
+                    "Second execution of consumed permit MUST be rejected"
                 )
 
             # 3. Check unsupported action rejection

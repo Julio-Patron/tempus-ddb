@@ -64,10 +64,31 @@ def validate_json_string(value: str, field_name: str) -> None:
 
 
 # -- MCP server setup --------------------------------------------------
-app = Server("tempus-ddb-mcp")
+#
+# The tool implementations below are plain module-level coroutines
+# (``list_tools`` / ``call_tool``) so they can be unit-tested directly. How they
+# are attached to the low-level ``Server`` depends on the installed ``mcp``:
+#   * mcp 1.x registers handlers with the ``@app.list_tools()`` / ``@app.call_tool()``
+#     decorators.
+#   * mcp 2.x removed those decorators; handlers are passed to the ``Server``
+#     constructor as ``on_list_tools`` / ``on_call_tool`` instead.
+_MCP_LEGACY_DECORATORS = hasattr(Server, "list_tools")
+
+if _MCP_LEGACY_DECORATORS:
+    app = Server("tempus-ddb-mcp")
+    _register_list_tools = app.list_tools()
+    _register_call_tool = app.call_tool()
+else:
+    app = None  # created after the handlers are defined (see bottom of module)
+
+    def _register_list_tools(func):
+        return func
+
+    def _register_call_tool(func):
+        return func
 
 
-@app.list_tools()
+@_register_list_tools
 async def list_tools() -> list[Tool]:
     tools = [
         Tool(
@@ -391,7 +412,7 @@ def _gate_db(arguments: dict) -> TempusDDB:
     return TempusDDB(db_path, _gate_keyfile())
 
 
-@app.call_tool()
+@_register_call_tool
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         if name in ADMIN_TOOL_NAMES and not TEMPUS_ADMIN_TOOLS:
@@ -469,7 +490,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     text=json.dumps(
                         {
                             "status": "success",
-                            "message": f"Database initialized: {db_path}",
+                            "message": (
+                                f"Database initialized: {db_path}. No policy is "
+                                "installed by default: the gate denies every action "
+                                "(POLICY_NOT_INSTALLED) until an operator installs one."
+                            ),
                             "db_path": db_path,
                         },
                         indent=2,
@@ -728,6 +753,24 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 ),
             )
         ]
+
+
+if app is None:
+    # mcp >= 2.0: adapt the plain coroutines above to the on_* handler signature.
+    import mcp_types as _mcp_types
+
+    async def _on_list_tools(ctx, params):
+        return _mcp_types.ListToolsResult(tools=await list_tools())
+
+    async def _on_call_tool(ctx, params):
+        content = await call_tool(params.name, params.arguments or {})
+        return _mcp_types.CallToolResult(content=content)
+
+    app = Server(
+        "tempus-ddb-mcp",
+        on_list_tools=_on_list_tools,
+        on_call_tool=_on_call_tool,
+    )
 
 
 async def main():

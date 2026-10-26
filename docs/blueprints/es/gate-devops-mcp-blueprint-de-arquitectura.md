@@ -1,6 +1,6 @@
 # Gate B2A para Agente DevOps sobre MCP — Blueprint de arquitectura
 
-*Patrón B2A generalizado a partir de [tempus-ddb](https://github.com/elbuilder77/tempus-ddb), aplicado a un servidor MCP propio con acciones de GitHub PR y alertas de Slack.*
+*Patrón B2A generalizado a partir de [tempus-ddb](https://github.com/Julio-Patron/tempus-ddb), aplicado a un servidor MCP propio con acciones de GitHub PR y alertas de Slack.*
 
 ## Diagrama de flujo
 
@@ -48,7 +48,7 @@ sequenceDiagram
 - [x] La política de repos/canales permitidos es determinista y firmada.
 - [x] Un vale consumido no puede reutilizarse (evita doble PR / doble alerta).
 - [x] Los vales expiran.
-- [x] Fail-closed por defecto.
+- [x] Default-deny: sin política instalada el gate deniega toda acción y firma la denegación (`POLICY_NOT_INSTALLED`).
 - [x] Todo PR o alerta, exitoso o fallido, produce un recibo firmado.
 - [ ] *Pendiente de decidir por el equipo:* si además de la autorización automática, ciertos repos requieren un paso de revisión humana antes del vale.
 - [ ] *Pendiente:* qué tools administrativas (creación de identidades, rotación de tokens) quedan fuera del servidor MCP de cara al agente.
