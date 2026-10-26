@@ -19,7 +19,7 @@ Practical, copy-paste recipes for integrating Tempus DDB B2A security gates into
 Looking to design production B2A toll gates for your organization or client teams? Explore the official blueprints:
 * 🛠️ [**DevOps Gate over MCP Blueprint**](../docs/blueprints/devops-mcp/product-blueprint.md) — Threat model, sequence diagrams, and contracts for OpenClaw, Hermes, and developer agents.
 * 💳 [**Financial Gate for Multi-Agent Crews Blueprint**](../docs/blueprints/payments-crewai/product-blueprint.md) — Financial toll gates, universal money contracts, and Stripe isolation for CrewAI and LangGraph.
-* 🌐 [**Complete Blueprints Directory**](../docs/blueprints/README.md) (Available in English and [Español](../docs/blueprints/es/))
+* 🌐 [**Complete Blueprints Directory**](../docs/blueprints/README.md)
 
 ---
 
