@@ -1,4 +1,13 @@
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, unused_imports, unused_variables, irrefutable_let_patterns)
+)]
+//! Signed policy bundles, their deterministic evaluation, and the signer boundary.
+//! Policy storage needs the gate database and is compiled out on wasm32; evaluation and
+//! verification are pure and shared with the browser verifier.
+
 use ed25519_dalek::{Signature, Signer as DalekSigner, SigningKey, Verifier, VerifyingKey};
+#[cfg(not(target_arch = "wasm32"))]
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -106,6 +115,7 @@ pub(crate) struct PolicyDecision {
     pub executor_constraints: Value,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn initialize_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS policy_bundles (
@@ -217,6 +227,7 @@ fn stale_dev_currency_error(detail: &str) -> String {
 /// is the only path that replaces a stored dev policy whose currency list is not exact
 /// codes; loading that policy never rewrites it. Refuses to replace a different active
 /// `*` policy.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn install_allow_all_dev_policy(
     conn: &Connection,
     signer: &ConfiguredSigner,
@@ -302,6 +313,7 @@ pub(crate) fn no_policy_digest() -> String {
     crate::b2a::sha256_hex(NO_POLICY_VERSION.as_bytes())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn install_policy(
     conn: &Connection,
     signer: &ConfiguredSigner,
@@ -425,6 +437,7 @@ pub(crate) fn install_policy(
     Ok(bundle)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn active_policy(
     conn: &Connection,
     signer: &ConfiguredSigner,
@@ -543,6 +556,7 @@ pub(crate) fn active_policy(
     ))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn list_policies(conn: &Connection) -> Result<String, String> {
     let mut statement = conn
         .prepare("SELECT bundle_json, retired_at FROM policy_bundles ORDER BY issued_at ASC")
@@ -589,6 +603,7 @@ pub(crate) fn signer_conformance(signer: &dyn SignerBackend) -> Result<String, S
     }))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn policy_by_version(conn: &Connection, version: &str) -> Result<Option<Value>, String> {
     conn.query_row(
         "SELECT bundle_json FROM policy_bundles WHERE policy_version = ?1",

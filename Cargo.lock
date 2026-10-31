@@ -959,11 +959,12 @@ dependencies = [
 
 [[package]]
 name = "tempus-ddb"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "clap",
  "ed25519-dalek",
  "hex",
+ "js-sys",
  "pyo3",
  "pyo3-build-config",
  "r2d2",

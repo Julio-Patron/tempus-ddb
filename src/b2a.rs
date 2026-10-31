@@ -1,6 +1,18 @@
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, unused_imports, unused_variables, irrefutable_let_patterns)
+)]
+//! Tempus Protocol documents: canonicalization, signed receipts and the independent
+//! verifier. Everything that needs the gate database is compiled out on wasm32, so the
+//! verifier (`verify_receipt_pinned`, `verify_bundle_pinned`) runs unchanged in a browser.
+
 use crate::phase3::{ConfiguredSigner, SignerBackend};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::SqliteStorage;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+#[cfg(not(target_arch = "wasm32"))]
+use ed25519_dalek::{Signer, SigningKey};
+#[cfg(not(target_arch = "wasm32"))]
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -15,6 +27,50 @@ const TRACE_SCHEMA: &str = "tempus.action-trace.v1";
 const TRACE_VERIFICATION_SCHEMA: &str = "tempus.trace-verification.v1";
 const EVIDENCE_BUNDLE_SCHEMA: &str = "tempus.evidence-bundle.v1";
 const AGENT_REGISTRATION_SCHEMA: &str = "tempus.agent-registration.v1";
+
+/// Public verifier every receipt and bundle points to. Override with `TEMPUS_VERIFY_URL`
+/// (an `https://` or `http://` page) to point evidence at a self-hosted verifier.
+pub(crate) const DEFAULT_VERIFY_URL: &str = "https://julio-patron.github.io/tempus-ddb/verify.html";
+
+/// Base URL of the verifier that receipts and bundles should link to.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn verify_url_base() -> String {
+    match std::env::var("TEMPUS_VERIFY_URL") {
+        Ok(raw) => {
+            let trimmed = raw.trim().trim_end_matches('#').to_string();
+            if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
+                trimmed
+            } else {
+                DEFAULT_VERIFY_URL.to_string()
+            }
+        }
+        Err(_) => DEFAULT_VERIFY_URL.to_string(),
+    }
+}
+
+/// Link that opens the public verifier on one action (the page asks for the evidence
+/// file and the pinned gate key; the link itself carries no document).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn receipt_verify_url(action_id: &str) -> String {
+    format!("{}#action={action_id}", verify_url_base())
+}
+
+/// SHA-256 of the canonical bundle without its unsigned `verify_url` field: the value a
+/// bundle's `verify_url` carries after `#bundle=`, so a reader can check that the link
+/// and the file belong together before trusting either.
+pub(crate) fn bundle_digest_of_value(bundle: &Value) -> Result<String, String> {
+    let mut stripped = bundle.clone();
+    if let Some(object) = stripped.as_object_mut() {
+        object.remove("verify_url");
+    }
+    Ok(sha256_hex(canonicalize(&stripped)?.as_bytes()))
+}
+
+/// [`bundle_digest_of_value`] for bundle JSON text (strict parse: repeated keys rejected).
+pub(crate) fn bundle_digest_of_json(bundle_json: &str) -> Result<String, String> {
+    let bundle = crate::strict_json::parse_labeled(bundle_json, "Bundle")?;
+    bundle_digest_of_value(&bundle)
+}
 const LEGACY_POLICY_VERSION: &str = "tempus.identity-gate.v1";
 
 /// Where the verifier gets its trust from.
@@ -25,6 +81,7 @@ const LEGACY_POLICY_VERSION: &str = "tempus.identity-gate.v1";
 /// public key from the verifier (out of band) and never consults a database.
 #[derive(Clone, Copy)]
 pub(crate) enum Trust<'a> {
+    #[cfg(not(target_arch = "wasm32"))]
     Database(&'a Connection),
     Pinned {
         gate: &'a str,
@@ -49,6 +106,7 @@ struct IntentFields {
     requested_at: u64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn initialize_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS agents (
@@ -133,11 +191,23 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn now_micros() -> Result<u64, String> {
     std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map(|duration| duration.as_micros() as u64)
         .map_err(|e| format!("System time error: {e}"))
+}
+
+/// In the browser the clock comes from `Date.now()` (milliseconds); the verifier only uses
+/// it to tell an unexpired permit (`AUTHORIZED`) from an expired one (`EXPIRED`).
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn now_micros() -> Result<u64, String> {
+    let millis = js_sys::Date::now();
+    if !millis.is_finite() || millis < 0.0 {
+        return Err("System time error: Date.now() is not a finite timestamp".to_string());
+    }
+    Ok((millis * 1000.0) as u64)
 }
 
 fn write_canonical(value: &Value, output: &mut String) -> Result<(), String> {
@@ -225,6 +295,7 @@ pub(crate) fn verify_message_signature(public_key: &str, message: &[u8], signatu
     verifying_key.verify(message, &signature).is_ok()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn sign_digest(signer: &ConfiguredSigner, digest: &str) -> Result<String, String> {
     let bytes = hex::decode(digest).map_err(|e| format!("Invalid digest hex: {e}"))?;
     signer.sign(&bytes)
@@ -237,6 +308,7 @@ pub(crate) fn verify_digest_signature(public_key: &str, digest: &str, signature:
     verify_message_signature(public_key, &bytes, signature)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_signing_key(path: &str) -> Result<SigningKey, String> {
     let contents = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read key file '{path}': {e}"))?;
@@ -347,6 +419,7 @@ fn action_id_for(fields: &IntentFields) -> String {
     )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn gate_identity(storage: &SqliteStorage) -> Result<(ConfiguredSigner, String), String> {
     let signer = storage.load_signer()?;
     let gate_id = signer.identity().public_key.clone();
@@ -362,6 +435,7 @@ fn gate_identity(storage: &SqliteStorage) -> Result<(ConfiguredSigner, String), 
     Ok((signer, gate_id))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn lifecycle_end_for_key(
     conn: &Connection,
     identity_id: &str,
@@ -432,6 +506,7 @@ fn lifecycle_end_for_key(
     Ok(end)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn verify_agent_state_at(
     conn: &Connection,
     public_key: &str,
@@ -441,6 +516,7 @@ fn verify_agent_state_at(
     verify_agent_state_at_inner(conn, public_key, at_micros, &mut visited)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn verify_agent_state_at_inner(
     conn: &Connection,
     public_key: &str,
@@ -604,10 +680,12 @@ fn verify_agent_state_at_inner(
     }))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn verify_agent_state(conn: &Connection, public_key: &str) -> Result<Option<AgentState>, String> {
     verify_agent_state_at(conn, public_key, now_micros()?)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn register_agent(
     storage: &SqliteStorage,
     public_key: &str,
@@ -821,12 +899,14 @@ pub(crate) fn register_agent(
     }))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn verify_agent(storage: &SqliteStorage, public_key: &str) -> Result<bool, String> {
     Ok(verify_agent_state(&storage.conn, public_key)?
         .map(|state| state.active)
         .unwrap_or(false))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn list_agents(storage: &SqliteStorage) -> Result<String, String> {
     let mut statement = storage
         .conn
@@ -904,6 +984,7 @@ pub(crate) fn list_agents(storage: &SqliteStorage) -> Result<String, String> {
     canonicalize(&Value::Array(agents))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn get_agent(storage: &SqliteStorage, public_key: &str) -> Result<String, String> {
     let agents: Value = serde_json::from_str(&list_agents(storage)?)
         .map_err(|e| format!("Failed to parse agent list: {e}"))?;
@@ -919,6 +1000,7 @@ pub(crate) fn get_agent(storage: &SqliteStorage, public_key: &str) -> Result<Str
         .ok_or_else(|| "TEMPUS_AGENT_NOT_FOUND".to_string())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn rotate_agent(
     storage: &SqliteStorage,
     current_public_key: &str,
@@ -1084,6 +1166,7 @@ pub(crate) fn rotate_agent(
     Ok(lifecycle_json)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn revoke_agent(
     storage: &SqliteStorage,
     public_key: &str,
@@ -1181,6 +1264,7 @@ pub(crate) fn revoke_agent(
     canonicalize(&event_result)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn list_identity_events(storage: &SqliteStorage) -> Result<String, String> {
     let mut statement = storage
         .conn
@@ -1200,6 +1284,7 @@ pub(crate) fn list_identity_events(storage: &SqliteStorage) -> Result<String, St
     canonicalize(&Value::Array(events))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn request_action(
     storage: &SqliteStorage,
     intent: &str,
@@ -1220,6 +1305,7 @@ pub(crate) fn request_action(
     )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn request_action_signed(
     storage: &SqliteStorage,
     intent: &str,
@@ -1337,6 +1423,7 @@ pub(crate) fn request_action_signed(
         "expires_at": expires_at,
         "gate_id": gate_id,
         "gate_signer": gate_key.identity().to_json(),
+        "verify_url": receipt_verify_url(&action_id),
     });
     let authorization_id = sha256_hex(canonicalize(&body)?.as_bytes());
     let gate_signature = sign_digest(&gate_key, &authorization_id)?;
@@ -1472,6 +1559,7 @@ fn verify_authorization(trust: Trust<'_>, result: &Value) -> Vec<String> {
         .and_then(Value::as_u64)
         .unwrap_or_default();
     match trust {
+        #[cfg(not(target_arch = "wasm32"))]
         Trust::Database(conn) => {
             match verify_agent_state_at(conn, gate_id, authorization_issued_at) {
                 Ok(Some(state)) if state.active && state.can_delegate => {}
@@ -1488,6 +1576,7 @@ fn verify_authorization(trust: Trust<'_>, result: &Value) -> Vec<String> {
 
     let pinned_gate = match trust {
         Trust::Pinned { gate, .. } => Some(gate),
+        #[cfg(not(target_arch = "wasm32"))]
         Trust::Database(_) => None,
     };
     let policy_bundle = result.get("policy_bundle");
@@ -1651,7 +1740,8 @@ fn verify_authorization(trust: Trust<'_>, result: &Value) -> Vec<String> {
                 // pinned gate key attests registration; a denial for a registry
                 // reason is accepted as-is (it can only reduce authority), but an
                 // ALLOWED decision must be reproducible from everything else.
-                let agent_state = match trust {
+                let agent_state: Result<Option<Option<AgentState>>, String> = match trust {
+                    #[cfg(not(target_arch = "wasm32"))]
                     Trust::Database(conn) => {
                         verify_agent_state_at(conn, agent_id, authorization_issued_at).map(Some)
                     }
@@ -1740,6 +1830,7 @@ fn verify_authorization(trust: Trust<'_>, result: &Value) -> Vec<String> {
     errors
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn commit_outcome(
     storage: &SqliteStorage,
     authorization_id: &str,
@@ -1775,6 +1866,7 @@ pub(crate) fn commit_outcome(
     commit_outcome_signed(storage, authorization_id, &signed_outcome)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn commit_outcome_signed(
     storage: &SqliteStorage,
     authorization_id: &str,
@@ -1928,6 +2020,7 @@ pub(crate) fn commit_outcome_signed(
         "status": outcome_status,
         "completed_at": completed_at,
         "gate_id": gate_id,
+        "verify_url": receipt_verify_url(&action_id),
     });
     let receipt_id = sha256_hex(canonicalize(&body)?.as_bytes());
     let gate_signature = sign_digest(&gate_key, &receipt_id)?;
@@ -2134,6 +2227,7 @@ fn verify_execution(
         .and_then(Value::as_u64)
         .unwrap_or_default();
     match trust {
+        #[cfg(not(target_arch = "wasm32"))]
         Trust::Database(conn) => match verify_agent_state_at(conn, executor_id, completed_at) {
             Ok(Some(state)) if state.active => {
                 let auth_tenant = authorization_receipt
@@ -2177,6 +2271,7 @@ fn verify_execution(
     errors
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn get_trace(storage: &SqliteStorage, action_id: &str) -> Result<String, String> {
     let authorization_json: String = storage
         .conn
@@ -2215,6 +2310,7 @@ pub(crate) fn get_trace(storage: &SqliteStorage, action_id: &str) -> Result<Stri
 
 fn trust_json(trust: Trust<'_>, standalone_outcome: bool) -> Value {
     match trust {
+        #[cfg(not(target_arch = "wasm32"))]
         Trust::Database(_) => json!({
             "mode": "DATABASE_SELF_ATTESTED",
             "independent": false,
@@ -2378,7 +2474,13 @@ fn verify_trace_value(trust: Trust<'_>, trace: &Value) -> Result<String, String>
 
 /// Fields of the trace wrapper that are part of `tempus.action-trace.v1`.
 const TRACE_FIELDS: &[&str] = &["schema_version", "action_id", "authorization", "execution"];
-const BUNDLE_FIELDS: &[&str] = &["schema_version", "action_id", "trace", "checkpoint"];
+const BUNDLE_FIELDS: &[&str] = &[
+    "schema_version",
+    "action_id",
+    "trace",
+    "checkpoint",
+    "verify_url",
+];
 const BUNDLE_CHECKPOINT_FIELDS: &[&str] = &["checkpoint", "stream"];
 
 /// Wrapper objects carry unsigned fields only by mistake or by design of an attacker:
@@ -2409,6 +2511,7 @@ fn push_error(result: &mut Value, code: &str) {
 }
 
 /// Legacy verification: trust root taken from the database itself.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn verify_trace(storage: &SqliteStorage, action_id: &str) -> Result<String, String> {
     let trust = Trust::Database(&storage.conn);
     let trace: Value = match get_trace(storage, action_id) {
@@ -2467,6 +2570,7 @@ fn normalize_pinned(gate: &str, executors: &[String]) -> Result<(String, Vec<Str
 
 /// Verify the stored trace against a gate public key pinned by the verifier.
 /// The database is only used as a container for the receipt documents.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn verify_trace_pinned(
     storage: &SqliteStorage,
     action_id: &str,
@@ -2539,6 +2643,7 @@ const BUNDLE_DEFAULT_MAX_EVENTS: u64 = 10_000;
 /// signature) plus, when one exists, the latest gate-signed checkpoint covering
 /// the action together with the tenant's event stream it commits to. The bundle
 /// holds no private keys: every field is either a public document or a hash.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn export_bundle(
     storage: &SqliteStorage,
     action_id: &str,
@@ -2606,12 +2711,15 @@ pub(crate) fn export_bundle(
             }
         }
     }
-    canonicalize(&json!({
+    let mut bundle = json!({
         "schema_version": EVIDENCE_BUNDLE_SCHEMA,
         "action_id": action_id,
         "trace": trace,
         "checkpoint": checkpoint,
-    }))
+    });
+    let digest = bundle_digest_of_value(&bundle)?;
+    bundle["verify_url"] = Value::String(format!("{}#bundle={digest}", verify_url_base()));
+    canonicalize(&bundle)
 }
 
 fn stream_includes(
@@ -2665,6 +2773,23 @@ pub(crate) fn verify_bundle_pinned(
     }
     for code in unknown_fields(&bundle, "bundle", BUNDLE_FIELDS) {
         push_error(&mut result, &code);
+    }
+    // `verify_url` is unsigned and only a pointer: it must name this very bundle.
+    let bundle_digest = bundle_digest_of_value(&bundle)?;
+    result["bundle_digest"] = json!(bundle_digest);
+    match bundle.get("verify_url") {
+        None => {}
+        Some(Value::String(url)) => {
+            result["verify_url"] = json!(url);
+            match url.rsplit_once("#bundle=") {
+                Some((base, digest))
+                    if (base.starts_with("https://") || base.starts_with("http://"))
+                        && digest == bundle_digest => {}
+                Some(_) => push_error(&mut result, "BUNDLE_VERIFY_URL_MISMATCH"),
+                None => push_error(&mut result, "BUNDLE_VERIFY_URL_INVALID"),
+            }
+        }
+        Some(_) => push_error(&mut result, "BUNDLE_VERIFY_URL_INVALID"),
     }
 
     let checkpoint_check = match bundle.get("checkpoint").filter(|value| !value.is_null()) {

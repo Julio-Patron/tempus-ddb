@@ -1,6 +1,15 @@
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(dead_code, unused_imports, unused_variables, irrefutable_let_patterns)
+)]
+//! Hash-linked event stream and gate-signed checkpoints (`tempus.event-stream-event.v1`,
+//! `tempus.checkpoint.v1`). Recording needs the gate database and is compiled out on
+//! wasm32; `verify_checkpoint_stream` is pure and shared with the browser verifier.
+
 use crate::b2a::sha256_hex;
 use crate::phase3::{ConfiguredSigner, SignerBackend};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+#[cfg(not(target_arch = "wasm32"))]
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -15,6 +24,7 @@ pub(crate) const CHECKPOINT_VERIFICATION_SCHEMA: &str = "tempus.checkpoint-verif
 pub(crate) const GENESIS_PREV_HASH: &str =
     "0000000000000000000000000000000000000000000000000000000000000000";
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn initialize_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS event_stream (
@@ -52,6 +62,7 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<(), String> {
 }
 
 /// Monotonically appends an event to the tenant's hash-linked event stream.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_event(
     conn: &Connection,
     tenant_id: &str,
@@ -118,6 +129,7 @@ pub(crate) fn record_event(
 }
 
 /// Creates and signs a monotonic checkpoint over the tenant's current event stream state.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn create_checkpoint(
     conn: &Connection,
     signer: &ConfiguredSigner,
@@ -221,6 +233,7 @@ pub(crate) fn create_checkpoint(
 }
 
 /// Exports an incremental slice of the event stream for a tenant.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn export_event_stream(
     conn: &Connection,
     tenant_id: &str,
