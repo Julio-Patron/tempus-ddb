@@ -12,6 +12,7 @@ import warnings
 from . import __version__
 from ._tempus_ddb import (
     TempusDDB,
+    bundle_digest,
     gen_keys,
     verify_bundle,
     verify_checkpoint,
@@ -22,6 +23,15 @@ from .mcp_server import main_sync
 # --- Default paths (used when global args are not provided) ---
 DEFAULT_KEYFILE = "keys.json"
 DEFAULT_DB = "tempus.db"
+DEFAULT_VERIFY_URL = "https://julio-patron.github.io/tempus-ddb/verify.html"
+
+
+def _verify_url_base():
+    """The verifier receipts and bundles link to (override: TEMPUS_VERIFY_URL)."""
+    raw = os.environ.get("TEMPUS_VERIFY_URL", "").strip().rstrip("#")
+    if raw.startswith(("https://", "http://")):
+        return raw
+    return DEFAULT_VERIFY_URL
 
 
 def _resolve_paths(args):
@@ -122,7 +132,7 @@ def run_init(args):
     if os.path.exists(db_path):
         print(f"[{db_path}] already exists - verifying schema...")
     else:
-        print(f"Initializing new ledger at {db_path}...")
+        print(f"Initializing new gate at {db_path}...")
 
     try:
         db = TempusDDB(db_path, keyfile)
@@ -162,7 +172,8 @@ def run_keygen(args):
     """Generate a workload keypair for an agent, executor, or gate."""
     if os.path.exists(args.output):
         print(
-            f"[ERROR] Refusing to overwrite existing key file: {args.output}", file=sys.stderr
+            f"[ERROR] Refusing to overwrite existing key file: {args.output}",
+            file=sys.stderr,
         )
         sys.exit(1)
     try:
@@ -183,218 +194,59 @@ def run_keygen(args):
         sys.exit(1)
 
 
-def run_verify(args):
-    db_path, keyfile = _resolve_paths(args)
-
-    if not os.path.exists(db_path):
-        print("[ERROR] No database found. Run 'tempus init' first.", file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        db = TempusDDB(db_path, keyfile if os.path.exists(keyfile) else DEFAULT_KEYFILE)
-        result = db.validate()
-        result_str = str(result).lower()
-        if "invalid" in result_str or "error" in result_str or "mismatch" in result_str:
-            print("[ERROR] Ledger validation FAILED")
-            print(result)
-            sys.exit(1)
-        else:
-            print("[OK] Ledger validation successful.")
-            print(result)
-    except Exception as e:
-        print(f"[ERROR] Validation failed: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
 def run_status(args):
+    """Show the gate's keys, database, identities and policy, and where evidence is verified."""
     db_path, keyfile = _resolve_paths(args)
 
-    print("Tempus DDB Status")
-    print("=================")
+    print("Tempus status")
+    print("=============")
 
-    # Keys
     if os.path.exists(keyfile):
+        print(f"[OK] Gate key file: {keyfile}")
         try:
-            size = os.path.getsize(keyfile)
-            print(f"[OK] Keys file: {keyfile} ({size} bytes)")
-        except Exception:
-            print(f"[OK] Keys file: {keyfile}")
+            with open(keyfile, encoding="utf-8") as handle:
+                public_key = json.load(handle).get("public_key")
+            if public_key:
+                print(f"  Gate public key: {public_key}")
+        except Exception as exc:
+            print(f"  Gate public key: unavailable ({exc})")
     else:
-        print("[ERROR] Keys file: not found (run 'tempus init')")
+        print("[ERROR] Gate key file: not found (run 'tempus init')")
 
-    # Database
     if os.path.exists(db_path):
-        try:
-            size = os.path.getsize(db_path)
-            print(f"[OK] Database: {db_path} ({size} bytes)")
-        except Exception:
-            print(f"[OK] Database: {db_path}")
-
+        print(f"[OK] Gate database: {db_path} ({os.path.getsize(db_path)} bytes)")
         try:
             db = TempusDDB(
                 db_path, keyfile if os.path.exists(keyfile) else DEFAULT_KEYFILE
             )
-            validation = db.validate()
-            val_str = str(validation).lower()
-
-            if "invalid" in val_str or "error" in val_str or "mismatch" in val_str:
-                print("[ERROR] Chain integrity: INVALID")
-                print(f"  Details: {validation}")
+            agents = json.loads(db.list_agents())
+            print(f"  Registered identities: {len(agents)}")
+            policies = json.loads(db.list_policies())
+            active = [p for p in policies if p.get("status") == "ACTIVE"]
+            if active:
+                version = active[0].get("policy_version") or active[0].get("version")
+                print(f"  Active policy: {version} (of {len(policies)} installed)")
             else:
-                print("[OK] Chain integrity: VALID")
-
-            # Show record count
-            try:
-                count = db.count()
-                print(f"  Total decisions: {count}")
-            except Exception as exc:
-                print(f"  Total decisions: unavailable ({exc})")
-
-            # Try to show last hash if present in result
-            try:
-                if isinstance(validation, str):
-                    data = json.loads(validation)
-                else:
-                    data = validation
-                if isinstance(data, dict):
-                    last_hash = data.get("latest_hash") or data.get("result", {}).get(
-                        "latest_hash"
-                    )
-                    if last_hash:
-                        print(f"  Latest hash: {last_hash}")
-            except Exception as exc:
-                print(f"  Latest hash: unavailable ({exc})")
-
-        except Exception as e:
-            print(f"[ERROR] Could not validate database: {e}")
+                print("  Active policy: none (default deny: every request is BLOCKED)")
+        except Exception as exc:
+            print(f"[ERROR] Could not read the gate: {exc}")
     else:
-        print("[ERROR] Database: not found (run 'tempus init' and record at least once)")
+        print("[ERROR] Gate database: not found (run 'tempus init')")
 
+    print(f"  Evidence verifier: {_verify_url_base()}")
     print("\nNext steps if needed:")
-    print("  tempus init     # to initialize")
+    print("  tempus init            # create the gate key and database")
+    print(
+        "  tempus install-policy  # install a signed policy (the gate denies until then)"
+    )
     print("  tempus request-action  # obtain a signed execution permit")
-
-
-def run_record(args):
-    """Direct CLI recording (task D improvement)."""
-    db_path, keyfile = _resolve_paths(args)
-
-    if not os.path.exists(keyfile):
-        print("[ERROR] No keys found. Run 'tempus init' first.", file=sys.stderr)
-        sys.exit(1)
-
-    if not os.path.exists(db_path) and not args.genesis:
-        # For non-genesis, db should exist
-        print(
-            "[ERROR] Database not found. You must create the first (genesis) record first.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    try:
-        # Load payload
-        payload = args.payload
-        if os.path.isfile(payload):
-            with open(payload, encoding="utf-8") as f:
-                payload = f.read().strip()
-        try:
-            json.loads(payload)
-        except json.JSONDecodeError:
-            print(
-                "[ERROR] --payload must be valid JSON (or path to JSON file)", file=sys.stderr
-            )
-            sys.exit(1)
-
-        # Load rules
-        rules = args.rules
-        if os.path.isfile(rules):
-            with open(rules, encoding="utf-8") as f:
-                rules = f.read().strip()
-        try:
-            json.loads(rules)
-        except json.JSONDecodeError:
-            print(
-                "[ERROR] --rules must be valid JSON (or path to JSON file)", file=sys.stderr
-            )
-            sys.exit(1)
-
-        db = TempusDDB(db_path, keyfile)
-
-        # The core auto-links non-genesis records to the latest record.
-        result = db.record(payload, rules, genesis=args.genesis)
-        print("[OK] Decision recorded successfully.")
-        print(result)
-    except Exception as e:
-        err_msg = str(e)
-        if "genesis" in err_msg.lower() or "empty" in err_msg.lower():
-            print(f"[ERROR] Chaining error: {err_msg}", file=sys.stderr)
-            print(
-                "  Tip: Use --genesis only for the first record. Later records auto-link to the latest record.",
-                file=sys.stderr,
-            )
-        else:
-            print(f"[ERROR] Record failed: {err_msg}", file=sys.stderr)
-        sys.exit(1)
-
-
-def run_export(args):
-    """Export the entire ledger as a JSON array."""
-    db_path, keyfile = _resolve_paths(args)
-
-    if not os.path.exists(db_path):
-        print("[ERROR] No database found. Run 'tempus init' first.", file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        db = TempusDDB(db_path, keyfile if os.path.exists(keyfile) else DEFAULT_KEYFILE)
-        result = db.export()
-        print(result)
-    except Exception as e:
-        print(f"[ERROR] Export failed: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-def run_list(args):
-    """List decisions with pagination."""
-    db_path, keyfile = _resolve_paths(args)
-
-    if not os.path.exists(db_path):
-        print("[ERROR] No database found. Run 'tempus init' first.", file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        db = TempusDDB(db_path, keyfile if os.path.exists(keyfile) else DEFAULT_KEYFILE)
-        result = db.list(limit=args.limit, offset=args.offset)
-        # Pretty-print the JSON output
-        try:
-            parsed = json.loads(result)
-            print(json.dumps(parsed, indent=2))
-        except (json.JSONDecodeError, TypeError):
-            print(result)
-    except Exception as e:
-        print(f"[ERROR] List failed: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-def run_count(args):
-    """Count the total number of decisions in the ledger."""
-    db_path, keyfile = _resolve_paths(args)
-
-    if not os.path.exists(db_path):
-        print("[ERROR] No database found. Run 'tempus init' first.", file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        db = TempusDDB(db_path, keyfile if os.path.exists(keyfile) else DEFAULT_KEYFILE)
-        count = db.count()
-        print(json.dumps({"total_decisions": count}))
-    except Exception as e:
-        print(f"[ERROR] Count failed: {e}", file=sys.stderr)
-        sys.exit(1)
+    print(
+        "  tempus export-bundle   # one evidence file an auditor verifies with the gate public key"
+    )
 
 
 def run_register_agent(args):
-    """Register an agent in the ledger's identity registry."""
+    """Register an agent in the gate's identity registry."""
     db_path, keyfile = _resolve_paths(args)
 
     if not os.path.exists(db_path):
@@ -413,13 +265,17 @@ def run_register_agent(args):
                 key_data = json.load(f)
             public_key = key_data.get("public_key")
             if not public_key:
-                print("[ERROR] Key file does not contain 'public_key'.", file=sys.stderr)
+                print(
+                    "[ERROR] Key file does not contain 'public_key'.", file=sys.stderr
+                )
                 sys.exit(1)
 
         db = TempusDDB(db_path, keyfile if os.path.exists(keyfile) else DEFAULT_KEYFILE)
         metadata = getattr(args, "metadata", "{}") or "{}"
         try:
-            _parse_exact(metadata, "metadata")  # same NON_EXACT_NUMBER wording as --intent
+            _parse_exact(
+                metadata, "metadata"
+            )  # same NON_EXACT_NUMBER wording as --intent
         except json.JSONDecodeError:
             pass  # the gate reports a syntax error with its own message
         result = db.register_agent(public_key, args.alias, metadata)
@@ -726,7 +582,8 @@ def run_export_bundle(args):
         bundle = db.export_bundle(args.action_id, args.max_stream_events)
         with open(args.out, "w", encoding="utf-8") as handle:
             handle.write(bundle)
-        has_checkpoint = json.loads(bundle).get("checkpoint") is not None
+        parsed = json.loads(bundle)
+        has_checkpoint = parsed.get("checkpoint") is not None
         print(
             json.dumps(
                 {
@@ -735,10 +592,18 @@ def run_export_bundle(args):
                     "out": args.out,
                     "bytes": len(bundle.encode("utf-8")),
                     "sha256": hashlib.sha256(bundle.encode("utf-8")).hexdigest(),
+                    "bundle_digest": bundle_digest(bundle),
+                    "verify_url": parsed.get("verify_url"),
                     "checkpoint_included": has_checkpoint,
                 },
                 indent=2,
             )
+        )
+        print(
+            "Share the file and the gate PUBLIC key. Anyone verifies it at the verify_url "
+            "(browser, no network) or with: tempus verify-bundle --bundle "
+            f"{args.out} --gate-public-key <hex>",
+            file=sys.stderr,
         )
         if not has_checkpoint:
             print(
@@ -797,7 +662,9 @@ def _find_prefix_url_patterns(spec):
     matches every URL of that scheme.
     """
     constraints = spec.get("constraints") if isinstance(spec, dict) else None
-    patterns = constraints.get("allowed_resources") if isinstance(constraints, dict) else []
+    patterns = (
+        constraints.get("allowed_resources") if isinstance(constraints, dict) else []
+    )
     found = []
     for pattern in patterns if isinstance(patterns, list) else []:
         if not isinstance(pattern, str) or not pattern.endswith("*"):
@@ -1167,7 +1034,7 @@ def main():
     parser.add_argument(
         "--db",
         default=DEFAULT_DB,
-        help=f"Path to the ledger database (default: {DEFAULT_DB})",
+        help=f"Path to the gate database (default: {DEFAULT_DB})",
     )
     parser.add_argument(
         "--keyfile",
@@ -1195,57 +1062,14 @@ def main():
     mcp_sub = mcp_parser.add_subparsers(dest="mcp_cmd", required=True)
     mcp_sub.add_parser("start", help="Start the MCP server for agents (stdio)")
 
-    # verify
-    subparsers.add_parser("verify", help="Cryptographically verify the entire ledger")
-
     # status
-    subparsers.add_parser("status", help="Show current ledger and keys status")
-
-    # record (new/improved for CLI users)
-    record_p = subparsers.add_parser(
-        "record", help="Record a decision directly from CLI"
-    )
-    record_p.add_argument(
-        "--payload",
-        required=True,
-        help="JSON string or path to JSON file with the decision",
-    )
-    record_p.add_argument(
-        "--rules",
-        required=True,
-        help="JSON string or path to JSON file with the rules applied",
-    )
-    record_p.add_argument(
-        "--genesis",
-        action="store_true",
-        help="Mark this as the first decision in the chain",
-    )
-    # Note: Parent chaining for audit should be included inside the JSON payload.
-    # The core ledger is append-only controlled by the `genesis` flag.
-
-    # export
-    subparsers.add_parser("export", help="Export the entire ledger as a JSON array")
-
-    # list
-    list_p = subparsers.add_parser("list", help="List decisions with pagination")
-    list_p.add_argument(
-        "--limit",
-        type=int,
-        default=10,
-        help="Maximum number of records to return (default: 10)",
-    )
-    list_p.add_argument(
-        "--offset", type=int, default=0, help="Number of records to skip (default: 0)"
-    )
-
-    # count
     subparsers.add_parser(
-        "count", help="Count the total number of decisions in the ledger"
+        "status", help="Show the gate's keys, database, identities and active policy"
     )
 
     # register-agent
     reg_agent_p = subparsers.add_parser(
-        "register-agent", help="Register an agent identity in the ledger"
+        "register-agent", help="Register an agent identity in the gate"
     )
     reg_agent_p.add_argument(
         "--alias", required=True, help="Human-readable alias for the agent"
@@ -1458,18 +1282,8 @@ def main():
             run_keygen(args)
         elif args.command == "mcp" and getattr(args, "mcp_cmd", None) == "start":
             main_sync()
-        elif args.command == "verify":
-            run_verify(args)
         elif args.command == "status":
             run_status(args)
-        elif args.command == "record":
-            run_record(args)
-        elif args.command == "export":
-            run_export(args)
-        elif args.command == "list":
-            run_list(args)
-        elif args.command == "count":
-            run_count(args)
         elif args.command == "register-agent":
             run_register_agent(args)
         elif args.command == "list-agents":

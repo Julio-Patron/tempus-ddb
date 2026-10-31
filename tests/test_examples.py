@@ -7,8 +7,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = [
-    "basic_record.py",
-    "verify_chain.py",
     "full_agent_flow.py",
 ]
 

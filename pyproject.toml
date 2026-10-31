@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "tempus-ddb"
-version = "0.5.4"
+version = "0.6.0"
 description = "Fail-closed security gate for AI agents: every action passes a signed policy or is blocked, with verifiable receipts."
 readme = "README.md"
 license = {text = "MIT"}
