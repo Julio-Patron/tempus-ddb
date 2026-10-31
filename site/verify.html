@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a1018">
+  <meta name="description" content="Verify a Tempus evidence bundle, permit or outcome receipt in your browser against the gate public key you pinned. Runs offline; nothing is uploaded.">
+  <link rel="canonical" href="https://julio-patron.github.io/tempus-ddb/verify.html">
+  <meta property="og:title" content="Verify evidence · Tempus DDB">
+  <meta property="og:description" content="Verify a Tempus evidence bundle, permit or outcome receipt in your browser against the gate public key you pinned. Runs offline; nothing is uploaded.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://julio-patron.github.io/tempus-ddb/verify.html">
+  <meta property="og:image" content="https://julio-patron.github.io/tempus-ddb/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Verify evidence · Tempus DDB">
+  <meta name="twitter:description" content="Verify a Tempus evidence bundle, permit or outcome receipt in your browser against the gate public key you pinned. Runs offline; nothing is uploaded.">
+  <meta name="twitter:image" content="https://julio-patron.github.io/tempus-ddb/og.png">
+  <link rel="icon" type="image/png" href="assets/logo.png">
+  <link rel="stylesheet" href="assets/site.css">
+  <style>
+    .verify-form label { display: block; font-weight: 500; margin: 1.1rem 0 .45rem; font-size: .9375rem; }
+    .verify-form label:first-of-type { margin-top: 0; }
+    .verify-form textarea, .verify-form input[type="text"] { display: block; width: 100%; background: #0a131c; border: 1px solid #4a5c6c; border-radius: 5px; color: var(--ink); padding: .65rem .7rem; font: .8125rem/1.6 var(--mono); }
+    .verify-form textarea { min-height: 7.5rem; resize: vertical; }
+    .verify-form input[type="file"] { display: block; width: 100%; color: var(--muted); font-size: .875rem; }
+    .verify-form .hint { color: var(--muted); font-size: .8125rem; margin: .4rem 0 0; }
+    .verify-form .hint strong { color: var(--amber); font-weight: 500; }
+    .verify-form .trace-controls { margin-top: 1.4rem; }
+    .result-section { margin-top: 1.6rem; }
+    .result-section h3 { font-size: 1rem; margin-bottom: .4rem; }
+    .result-section > p { color: var(--muted); font-size: .875rem; margin: 0 0 .4rem; }
+    .check.neutral .check-icon { color: var(--subtle); }
+    #engine-version { color: var(--subtle); font-size: .8125rem; margin-top: 1rem; }
+    #link-intro { margin-bottom: 1.2rem; }
+  </style>
+  <script type="module" src="assets/site.mjs"></script>
+  <script type="module" src="assets/verify-page.mjs"></script>
+  <title>Verify evidence · Tempus DDB</title>
+</head>
+<body class="page-trace">
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="./" aria-label="Tempus DDB home"><img src="assets/tempus-logo-mineral.png" alt="Tempus — The Decision Database" width="1024" height="318"></a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="main-nav" hidden>Menu <span aria-hidden="true">☰</span></button>
+      <nav class="site-nav" id="main-nav" aria-label="Main navigation"><a href="./">Overview</a><a href="docs.html">Documentation</a><a href="verify.html" aria-current="page">Verify evidence</a><a href="trace.html">Trace playground</a><a class="nav-source" href="https://github.com/Julio-Patron/tempus-ddb">GitHub <span aria-hidden="true">↗</span></a></nav>
+    </div>
+  </header>
+  <main id="main-content"><div class="shell"><header class="page-hero compact"><p class="eyebrow">Verifier / Offline, in your browser</p><h1>Someone sent you evidence.<br><em>Check it without trusting them.</em></h1><p class="lede">Load the evidence file and the gate public key you obtained separately. The verifier is the same code the <code>tempus</code> CLI runs, compiled to WebAssembly. Nothing leaves this page.</p></header>
+<noscript><div class="notice">Enable JavaScript to run the verifier, or use the CLI: <code>tempus verify-bundle --bundle evidence.json --gate-public-key &lt;hex&gt;</code>.</div></noscript>
+<p id="link-intro" class="notice" hidden></p>
+<div class="playground-layout">
+  <section class="trace-panel control-panel" aria-labelledby="input-title"><p class="eyebrow">01 / Evidence and key</p><h2 id="input-title">What you were given.</h2>
+  <form id="verify-form" class="verify-form" novalidate>
+    <label for="evidence-file">Evidence file</label>
+    <input id="evidence-file" name="evidence-file" type="file" accept=".json,application/json">
+    <p class="hint">An evidence bundle (<code>evidence.json</code> from <code>tempus export-bundle</code>), an action trace, a permit, or an outcome receipt. Or paste the JSON below.</p>
+    <label for="evidence-text">Evidence JSON (alternative to the file)</label>
+    <textarea id="evidence-text" name="evidence-text" spellcheck="false" placeholder='{"schema_version":"tempus.evidence-bundle.v1", …}'></textarea>
+    <label for="gate-key">Gate public key (64 hex characters)</label>
+    <input id="gate-key" name="gate-key" type="text" autocomplete="off" spellcheck="false" placeholder="e7fd8a67…">
+    <p class="hint">Get it from the operator through a channel you trust, not from the file you are verifying. <strong>Never paste a key file:</strong> only the public key.</p>
+    <label for="executor-keys">Executor public keys (optional, one per line)</label>
+    <textarea id="executor-keys" name="executor-keys" spellcheck="false" placeholder="Pin them to also check who executed."></textarea>
+    <div class="trace-controls"><button class="button primary" type="submit" id="verify-button" disabled>Verify</button><button class="button" type="button" id="load-sample" disabled>Load a real sample</button><button class="button danger-button" type="button" id="load-tampered" disabled>Load a tampered sample</button><button class="button" type="button" id="clear-form">Clear</button></div>
+  </form>
+  <div class="sample-note"><strong>Independent by construction.</strong><p>The verifier trusts only the key you pinned. It does not call the gate, does not read its database and has no private keys. The result is the same <code>tempus.trace-verification.v1</code> document the CLI prints.</p><p id="engine-version">Verifier: loading…</p></div>
+  </section>
+  <section class="trace-panel verification-panel" aria-labelledby="verification-title"><div class="panel-heading"><div><p class="eyebrow">02 / Verdict</p><h2 id="verification-title">What the evidence shows.</h2></div><span id="result-badge" class="badge neutral">LOADING</span></div>
+  <p id="verification-status" class="verification-status" role="status">Loading the verifier…</p>
+  <div id="link-panel" class="result-section" hidden></div>
+  <div id="evidence-summary" class="trace-summary" aria-live="polite"></div>
+  <div class="result-section"><h3>Signed documents</h3><div id="evidence-checks" class="trace-results"></div></div>
+  <div class="result-section" id="errors-section"><div id="evidence-errors" class="trace-results" hidden></div></div>
+  <div class="result-section"><h3>What this file cannot show</h3><p>A document proves what was signed. These points need the gate's ledger or more evidence, and the verifier says so instead of staying silent.</p><div id="not-checked" class="trace-results"></div></div>
+  </section>
+</div>
+<details class="trace-json"><summary>Inspect the full verification result (JSON)</summary><pre id="result-json" tabindex="0" aria-label="Verification result"></pre></details>
+<div class="trace-help"><div><h3>Where does the link come from?</h3><p>Every permit and outcome receipt the gate signs carries a <code>verify_url</code> pointing here with its action identifier, and every exported bundle carries one with the bundle digest. The link is unsigned on bundles, so this page checks that the link and the file you loaded belong together.</p></div><div><h3>What if VERIFIED is not enough?</h3><p>VERIFIED means the signed documents are intact and were signed by the pinned gate. It does not show that nothing else happened. For that, compare against a checkpoint (<code>tempus checkpoint verify</code>) or ask the operator for the bundle that includes one.</p></div></div>
+</div></main>
+  <footer class="site-footer"><div class="shell footer-grid"><div><a class="footer-brand" href="./">Tempus DDB</a><p>Authorization before action.<br>Evidence after execution.</p><span class="small">Open source · MIT · v0.6.0 beta</span></div><nav aria-label="Resources"><strong>Build</strong><a href="docs.html">Documentation</a><a href="verify.html">Verify evidence</a><a href="trace.html">Trace playground</a><a href="https://github.com/Julio-Patron/tempus-ddb/tree/main/cookbooks">Cookbooks</a><a href="https://pypi.org/project/tempus-ddb/">Python package</a><a href="https://crates.io/crates/tempus-ddb">Rust crate</a><a href="https://docs.rs/tempus-ddb">Rust API docs</a><a href="https://github.com/Julio-Patron/tempus-github-app">GitHub App</a></nav><nav aria-label="Project"><strong>Project</strong><a href="https://github.com/Julio-Patron/tempus-ddb">Source code</a><a href="https://github.com/Julio-Patron/tempus-ddb/blob/main/SPEC.md">Protocol spec</a><a href="https://github.com/Julio-Patron/tempus-ddb/blob/main/ROADMAP.md">Roadmap</a><a href="https://github.com/Julio-Patron/tempus-ddb/blob/main/THREAT_MODEL.md">Threat model</a><a href="https://github.com/Julio-Patron/tempus-ddb/blob/main/SECURITY.md">Report a vulnerability</a></nav></div><div class="shell footer-bottom"><span>Python 3.10+ · Rust native extension · MCP</span><a href="#main-content">Back to top ↑</a></div></footer>
+  <p class="sr-only" id="copy-status" role="status"></p>
+</body>
+</html>

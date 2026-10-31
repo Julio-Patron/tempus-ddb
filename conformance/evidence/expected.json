@@ -1,0 +1,94 @@
+{
+  "schema_version": "tempus.conformance-evidence.v1",
+  "gate_public_key_file": "gate_public_key.txt",
+  "executor_public_key_file": "executor_public_key.txt",
+  "action_id": "f698bd55c789b62ca90dd5c417a9fe1d29b69186fd2e762d0d958e176867c7ea",
+  "bundle_digest": "368b05a6983e8e37a1e60193002311dfa95620a39928bedf61c854d4338c224e",
+  "verify_url": "https://julio-patron.github.io/tempus-ddb/verify.html#bundle=368b05a6983e8e37a1e60193002311dfa95620a39928bedf61c854d4338c224e",
+  "cases": [
+    {
+      "file": "bundle.json",
+      "note": "The bundle as the gate exported it: permit, outcome, signed checkpoint and the stream it commits to. verify_url carries the bundle digest.",
+      "kind": "bundle",
+      "status": "VERIFIED",
+      "phase": "COMPLETED",
+      "checks": {
+        "authorization": "VERIFIED",
+        "execution": "VERIFIED",
+        "checkpoint": "VERIFIED"
+      },
+      "errors": []
+    },
+    {
+      "file": "bundle_permit_only.json",
+      "note": "The same bundle without its outcome and without verify_url. Still valid evidence of the permit; the verifier says the outcome is NOT_PRESENT and cannot prove nothing was hidden (trust.not_checked lists COMPLETENESS).",
+      "kind": "bundle",
+      "status": "VERIFIED",
+      "phase_any": [
+        "AUTHORIZED",
+        "EXPIRED"
+      ],
+      "checks": {
+        "authorization": "VERIFIED",
+        "execution": "NOT_PRESENT",
+        "checkpoint": "VERIFIED"
+      },
+      "errors": []
+    },
+    {
+      "file": "bundle_tampered_decision.json",
+      "note": "One signed field edited after the fact (decision). The receipt hash no longer matches and the verify link no longer names this file.",
+      "kind": "bundle",
+      "status": "INVALID",
+      "errors_include": [
+        "AUTHORIZATION_ID_MISMATCH",
+        "BUNDLE_VERIFY_URL_MISMATCH"
+      ]
+    },
+    {
+      "file": "bundle_tampered_amount.json",
+      "note": "The agent's intent edited after signing (amount). The intent hash in the signed receipt no longer matches the intent in the file.",
+      "kind": "bundle",
+      "status": "INVALID",
+      "errors_include": [
+        "INTENT_HASH_MISMATCH"
+      ]
+    },
+    {
+      "file": "bundle_wrong_verify_url.json",
+      "note": "Every signed document is intact but the verify link names another bundle. A link and a file that do not belong together are not evidence.",
+      "kind": "bundle",
+      "status": "INVALID",
+      "errors_include": [
+        "BUNDLE_VERIFY_URL_MISMATCH"
+      ]
+    },
+    {
+      "file": "trace.json",
+      "note": "The action trace (tempus.action-trace.v1) verified as a receipt: no checkpoint, so ledger inclusion is in trust.not_checked.",
+      "kind": "trace",
+      "status": "VERIFIED",
+      "phase": "COMPLETED",
+      "checks": {
+        "authorization": "VERIFIED",
+        "execution": "VERIFIED"
+      },
+      "errors": []
+    },
+    {
+      "file": "permit.json",
+      "note": "The permit alone (tempus.authorization-result.v1), as the agent received it.",
+      "kind": "authorization",
+      "status": "VERIFIED",
+      "phase_any": [
+        "AUTHORIZED",
+        "EXPIRED"
+      ],
+      "checks": {
+        "authorization": "VERIFIED",
+        "execution": "NOT_PRESENT"
+      },
+      "errors": []
+    }
+  ]
+}
