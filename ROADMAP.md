@@ -1,98 +1,114 @@
 # Tempus DDB roadmap
 
-Tempus DDB is currently a beta. The local authorization protocol, signed policy and
-identity lifecycle, Vault Transit signer, and credential-isolated GitHub executor are
-implemented and covered by automated tests. The project is not yet a horizontally
-durable or independently checkpointed service.
+Tempus is a fail-closed policy gate for autonomous agent actions: every effect needs a
+signed, single-use permit, and every effect leaves a signed receipt that anyone can
+verify with the gate's public key. The protocol (the `.v1` contracts in
+[SPEC.md](SPEC.md)), the policy evaluator, the ledger and the verifier live in this
+repository; the other Tempus products are built on them and never redefine them.
 
-The roadmap is ordered by security dependency: durability comes before a hosted audit
-experience, and one production-grade executor path comes before a broad adapter catalog.
+The roadmap is ordered by what each step makes possible: a public verifier before a PR
+check that links to it, a PR check before anchoring, both before a hosted console, and an
+independent security review before general availability. Platform work (distributed gate,
+quotas, telemetry) comes last, when a paying deployment needs it.
 
-## Available in the 0.4 line
+## Shipped: 0.4 and 0.5
 
-- Versioned intent, authorization, outcome, receipt, trace, and verification contracts.
-- Separate gate, requesting-agent, and executor Ed25519 identities.
+- Versioned intent, authorization, outcome, receipt, trace and verification contracts.
+- Separate gate, requesting-agent and executor Ed25519 identities; tenant-scoped
+  delegation, signed rotation and revocation, historical key resolution.
 - Signed deterministic policies with reproducible evidence and closed reason codes.
-- Tenant-scoped delegation, rotation, revocation, and historical key resolution.
-- Single-use expiring permits; an executor that cannot tell whether an effect happened records the outcome as unknown instead of retrying.
-- Local and Vault Transit signing through the same provider boundary.
-- A GitHub executor for exactly bound issue and pull-request creation.
-- Autonomous MCP tools, adapter conformance fixtures, SBOM generation, and release
-  attestations.
-- Bounded SQLite connection pooling for executor state transitions.
+- Single-use expiring permits; an executor that cannot tell whether an effect happened
+  records `UNKNOWN` instead of retrying.
+- Local and Vault Transit signing through one provider boundary.
+- Mediated executors for GitHub, HTTP, Slack and payments, with an adapter conformance
+  suite.
+- Append-only hash-linked event stream, gate-signed monotonic checkpoints, offline
+  rollback detection, backup and disaster-recovery procedures.
+- Default-deny on `tempus init`, strict JSON (duplicate keys and inexact numbers refused),
+  component-boundary pattern matching, independent verification with a pinned gate key.
+- Signed releases with provenance and SBOMs; Trusted Publishing to PyPI and crates.io.
 
-## Available in 0.5 — Durable local operations
+## 0.6 — Evidence (this release)
 
-- Stream validation and incremental export (`export_event_stream`) so large ledgers do not require in-memory duplication.
-- Append-only hash-linked event stream schema (`tempus.event-stream-event.v1`) recording authorizations, outcomes, registrations, and policies.
-- Monotonically sequenced Gate-signed external checkpoints (`tempus.checkpoint.v1`) binding cumulative SHA-256 stream root hashes.
-- Mathematical verification engine (`tempus.checkpoint-verification.v1`) detecting rollback attacks, deleted tail events, sequence gaps, and single-byte tampering.
-- Published backup, restore, reconciliation, and disaster-recovery procedures ([docs/BACKUP_AND_DISASTER_RECOVERY.md](docs/BACKUP_AND_DISASTER_RECOVERY.md)).
-- Multi-process contention, adversarial tampering, and crash recovery tests.
-- Unified mediated `ExecutorRuntime` and conformance testing suite for third-party adapters.
+Evidence at the front: anyone who is handed a receipt or a bundle can verify it in a
+browser, without installing anything and without trusting the gate that issued it.
 
-## Ejes
+- Public browser verifier at <https://julio-patron.github.io/tempus-ddb/verify.html>:
+  the wasm32 build of this crate, offline, pinned gate key, plain-language account of
+  what the document cannot show.
+- `verify_url` in every signed permit and execution receipt (`#action=<action_id>`) and
+  in every evidence bundle (`#bundle=<sha256 of the canonical bundle>`); the verifier
+  checks that link and file belong together.
+- [SPEC.md](SPEC.md): the fifteen contracts, canonicalization, hashing and signatures,
+  with real conformance fixtures in `conformance/evidence/` that the native verifier, the
+  browser verifier and third-party implementations are tested against.
+- The pre-protocol decision ledger (`record`, `verify`, `export`, `list`, `count`,
+  `TEMPUS_LEGACY_TOOLS`) and the key-file MCP tools (`TEMPUS_LOCAL_KEYFILE_TOOLS`) are
+  removed. The gate signs permits and receipts; nothing else is evidence.
 
-Los ítems de 0.5.5 y el backlog indican el eje que atienden; 0.5.4 ya está publicado.
+Exit criteria: the browser verifier and `tempus verify-bundle` return the same verdict for
+every conformance fixture; a bundle exported by a 0.5.4 gate still verifies.
 
-1. Promesa fail-closed: ninguna acción de un agente sale sin pasar por una política, y si algo falla, se bloquea.
-2. Especificación abierta de políticas y recibos con núcleo Rust; otros repositorios la consumen sin redefinir la semántica.
-3. Integraciones MCP, hooks y SDK con clientes delgados.
-4. Primero la confianza: modelo de amenazas, fuzzing, releases firmados, SBOM y política de vulnerabilidades.
-5. Batería abierta de ataques como benchmark.
+## 0.7 — Guard
 
-## 0.5.4 — Seguridad y matching (publicado el 2026-10-25)
+Tempus Guard for GitHub: the first installable product on the protocol.
 
-- Validación de dinero endurecida: las claves JSON duplicadas se rechazan, en los pagos `money` es obligatorio y mayor que cero, y las divisas solo se aceptan como códigos exactos (Ejes 1, 2).
-- Matching de patrones por límite de componente en la política, en la allowlist HTTP y en la de pagos (Ejes 1, 2).
-- Los resultados ambiguos de transporte quedan como `UNKNOWN`, no se reintentan y la clasificación es por tipo de excepción (Eje 1).
-- Default-deny en `tempus init`, `--allow-all-dev` explícito y verificación independiente (`verify-receipt`, `export-bundle`, `verify-bundle`) con clave pública fijada (Ejes 1, 2).
-- Los ejecutores HTTP, GitHub y Slack rechazan redirecciones; el ejecutor HTTP exige allowlist cuando lleva credenciales y bloquea destinos privados o de metadatos (Eje 1).
-- Tests adversariales y de paridad gate/ejecutor (Eje 5).
-- Release firmado con procedencia y SBOM SPDX y CycloneDX, aprobación manual y Trusted Publishing en PyPI y crates.io (Eje 4).
+- A GitHub App check on every pull request, "Verified by Tempus", linking to the public
+  verifier with the bundle for the agent's action.
+- The GitHub executor (`tempus-github-app`) issues the permit-bound push with a
+  short-lived token and exports the bundle the check links to.
+- The local policy firewall for coding agents (Universal-Kernel-Ciel) emits Tempus
+  intents and consumes permits instead of keeping its own ledger and policy language.
+- One policy evaluator (`jsonlogic-fast`) for the gate and the local firewall.
+- Dogfooding: every agent push to the project's own repositories goes through Guard.
 
-## 0.5.5 — Tope obligatorio y ejecutor de pagos seguro por defecto
+Exit criteria: an agent can open a PR only through a permit, and a reviewer can verify
+the PR's evidence from the check without any Tempus install.
 
-- Tope obligatorio `max_money_amount_minor` en las políticas `finance.*` (Ejes 1, 2).
-- Ejecutor de pagos seguro por defecto: sin secreto fijo y sin transporte simulado, salvo un flag de desarrollo (Eje 1).
-- `tempus_gen_keys` no sobrescribe claves existentes y las crea con modo `0600` (Eje 4).
-- Límite de tamaño de la respuesta HTTP (Eje 1).
+## 0.8 — Anchor
 
-## Backlog
+- `tempus anchor`: checkpoints anchored to an external, append-only medium with
+  pluggable backends (the `chain` module of the archived Decision-Database becomes the
+  first one), so a deleted or rolled-back gate database is detectable from outside.
+- Policy rules in `jsonlogic-fast` with signed rule bundles; the dev allow-all policy
+  stays an explicit opt-in.
+- Mandatory money ceilings for `finance.*` policies; payment executor safe by default.
 
-- Revocación sin `gate_db` y replay multi-instancia (Eje 1).
-- Escala decimal por moneda (Eje 2).
-- Python como capa delgada sobre Rust (Ejes 2, 3).
+Exit criteria: a verifier holding only the gate public key and an anchor reference can
+tell whether the exported stream is the one the gate committed to.
 
-## 0.6 — Service deployment
+## 0.9 — Console
 
-- Introduce a transport-neutral gate service around the existing signed contracts.
-- Add tenant isolation, quotas, rate limits, and explicit retention controls.
-- Provide opt-in OpenTelemetry metrics for decision latency, execution latency, replays,
-  expirations, policy denials, and `UNKNOWN` outcomes.
-- Package a least-privilege GitHub App deployment path.
-- Validate one distributed event-store implementation against the local conformance suite.
+Tempus Advance, a hosted read-only console over the same contracts.
 
-Exit criteria: multiple gate instances can process independent actions without weakening
-single-consumption or historical verification guarantees.
+- Multi-tenant read API that serves traces, bundles and checkpoints and never sits in the
+  authorization path.
+- Views derived only from verified documents; every view links to the public verifier.
+- The first tenant comes from Guard for GitHub.
+
+Exit criteria: the console shows nothing it cannot verify, and losing the console does
+not stop or weaken a single gate.
 
 ## 1.0 — General availability
 
-- Complete an independent security review and remediate high-severity findings.
-- Exercise release, upgrade, key rotation, revocation, backup, and incident procedures in
+- Independent security review and remediation of high-severity findings.
+- Release, upgrade, key rotation, revocation, backup and incident procedures exercised in
   a clean environment.
-- Publish signed reproducible artifacts with provenance and SPDX and CycloneDX SBOMs.
-- Provide a read-only audit API and console that never becomes part of the authorization
-  path.
-- Document the supported deployment profiles and their availability guarantees.
+- Stable read API; supported deployment profiles with their availability guarantees.
+- Only then the platform work deferred from the old 0.6: a transport-neutral distributed
+  gate, tenant quotas and rate limits, opt-in OpenTelemetry metrics. It is built when a
+  console customer needs it.
 
 ## Product principles
 
 - No permit, no effect; every effect produces a verifiable receipt.
 - Humans inspect history but do not sit in the autonomous transaction loop.
-- Unknown schemas, policies, identities, and execution states are rejected or denied, never treated as allowed. With no installed policy the gate denies every action (default-deny) and signs the denial.
+- Unknown schemas, policies, identities and execution states are rejected or denied,
+  never treated as allowed. With no installed policy the gate denies every action and
+  signs the denial.
 - Credentials belong to mediated executors, never to requesting agents.
-- Performance, availability, and compliance statements require reproducible evidence.
+- One protocol, one policy evaluator, one ledger, one brand across every Tempus product.
+- Performance, availability and compliance statements require reproducible evidence.
 
 Security assumptions and current limitations are maintained in
 [THREAT_MODEL.md](THREAT_MODEL.md). Compatibility commitments are maintained in

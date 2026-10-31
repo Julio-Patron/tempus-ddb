@@ -1,7 +1,8 @@
 # Compatibility and deprecation policy
 
-Tempus DDB `0.5.x` is a design-partner beta. The project keeps wire contracts stricter
-than its convenience APIs because authorization receipts may outlive a deployment.
+Tempus DDB `0.6.x` is a design-partner beta. The project keeps wire contracts stricter
+than its convenience APIs because authorization receipts may outlive a deployment. The
+contracts themselves are specified in [SPEC.md](SPEC.md).
 
 ## Wire schemas
 
@@ -19,7 +20,14 @@ than its convenience APIs because authorization receipts may outlive a deploymen
 - Patch releases preserve documented command names, Python methods, MCP tool names, and
   their required arguments.
 - A deprecated interface remains available for at least one minor release and is listed
-  in `CHANGELOG.md` with its replacement.
+  in `CHANGELOG.md` with its replacement. The pre-protocol decision ledger (`record`,
+  `verify`, `export`, `list`, `count`, `TEMPUS_LEGACY_TOOLS`) and the key-file MCP tools
+  (`TEMPUS_LOCAL_KEYFILE_TOOLS`) were documented as non-evidence and development-only
+  through the 0.5 line and are removed in 0.6.0; the signed flow (`request-action`,
+  `commit-outcome`, `export-bundle`, `verify-bundle`) is the replacement.
+- `verify_url` (0.6.0) is additive: it sits inside the signed receipt bodies, which
+  verifiers hash whole, and as an unsigned top-level bundle field that 0.6 verifiers
+  check against the bundle digest. 0.5.x receipts and bundles verify unchanged.
 - Security-sensitive behavior may become stricter in a patch release. Such changes are
   called out explicitly and never turn a blocked action into an allowed action.
 - Pattern matching now respects component boundaries (`.` and `/`). A `*` that is not

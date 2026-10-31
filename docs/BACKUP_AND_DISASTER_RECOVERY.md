@@ -1,6 +1,6 @@
 # Tempus DDB Backup, Restore, and Disaster Recovery Guide
 
-> **Release line:** `0.5.x` (Durable Local Operations; first published build `v0.5.3`, current `v0.5.4`)  
+> **Release line:** `0.6.x` (Evidence; procedure unchanged since `0.5.x`)  
 > **Status:** Operational Specification & Architecture Guide
 
 This document defines standard operating procedures for backing up, restoring, reconciling, and auditing Tempus DDB deployments, with explicit focus on **detecting rollback or deletion** using external signed checkpoints and append-only receipt streams.
