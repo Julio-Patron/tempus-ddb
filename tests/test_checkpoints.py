@@ -91,7 +91,7 @@ def test_create_and_verify_checkpoint():
             "executor_id": exec_id,
             "status": "SUCCEEDED",
             "output": {
-                "html_url": "https://github.com/elbuilder77/tempus-ddb/issues/101"
+                "html_url": "https://github.com/Julio-Patron/tempus-ddb/issues/101"
             },
             "completed_at": int(time.time() * 1_000_000),
         }
