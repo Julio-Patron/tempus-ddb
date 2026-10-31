@@ -130,8 +130,17 @@ jobs:
         shell: bash
         run: |
           python -m uv --quiet export --frozen --extra dev --no-emit-project --no-header --no-annotate --prune pip-audit -o requirements-audit.txt
+          # filelock's fix for CVE-2026-112909 / CVE-2026-112910 (4.2.1) requires Python
+          # 3.11; no release that supports 3.10 contains it. filelock is development
+          # tooling pulled in by pip-audit, never part of the published wheel, so on 3.10
+          # those two advisories are acknowledged rather than fixable. Drop this when
+          # 3.10 leaves the matrix.
+          IGNORE=()
+          if python -c 'import sys; sys.exit(0 if sys.version_info < (3, 11) else 1)'; then
+            IGNORE=(--ignore-vuln CVE-2026-112909 --ignore-vuln CVE-2026-112910)
+          fi
           # `python/` is a project directory, so pass the interpreter path explicitly.
-          python -m uv tool run --python "$(python -c 'import sys; print(sys.executable)')" pip-audit --disable-pip -r requirements-audit.txt
+          python -m uv tool run --python "$(python -c 'import sys; print(sys.executable)')" pip-audit --disable-pip "${IGNORE[@]}" -r requirements-audit.txt
           python -c "import pathlib; pathlib.Path('requirements-audit.txt').unlink(missing_ok=True)"
 
       - name: Run Ruff
