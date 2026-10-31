@@ -333,69 +333,7 @@ def test_cyclic_result_is_recorded_degraded_and_the_repr_is_bounded():
     assert len(json.dumps(receipt["output"])) < 2000
 
 
-# ----------- legacy ledger: documented as giving no exact-number guarantee
-
 ROOT = Path(__file__).parent.parent
-
-
-def _legacy_section() -> str:
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    start = readme.index("## Legacy ledger")
-    return readme[start : readme.index("\n## ", start + 1)]
-
-
-def _latest_changelog_section() -> str:
-    """The newest CHANGELOG section with content: Unreleased, or the last release
-    when Unreleased only holds a placeholder."""
-    sections = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").split("\n## [")[1:]
-    for section in sections:
-        body = section.split("]", 1)[1].strip()
-        if body and body.lower() != "nothing yet.":
-            return section
-    raise AssertionError("CHANGELOG.md has no section with content")
-
-
-def test_readme_and_changelog_say_the_legacy_ledger_is_not_verifiable_evidence():
-    section = _legacy_section()
-    assert "not verifiable evidence" in section
-    assert "exact-number" in section
-    assert "tempus verify" in section
-    unreleased = _latest_changelog_section()
-    assert "legacy ledger" in unreleased.lower()
-    assert "not verifiable evidence" in unreleased
-
-
-def test_legacy_ledger_still_validates_an_edited_number_which_is_why_it_is_documented():
-    """Pins the limit the docs describe: `verify` hashes the parsed (f64) value."""
-    import sqlite3
-
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
-        db = os.path.join(tmpdir, "legacy.db")
-        code, out, err = run_cli(["init", "--allow-all-dev"], cwd=tmpdir)
-        assert code == 0, (out, err)
-        code, out, err = run_cli(
-            [
-                "--db",
-                db,
-                "record",
-                "--genesis",
-                "--payload",
-                '{"v":1e2,"big":123456789012345678901234567890}',
-                "--rules",
-                '{"r":1}',
-            ],
-            cwd=tmpdir,
-        )
-        assert code == 0, (out, err)
-        for old, new in (("1e2", "100.0"), ("567890}", "567891}")):
-            conn = sqlite3.connect(db)
-            conn.execute(
-                "update decisions set payload = replace(payload, ?, ?)", (old, new)
-            )
-            conn.commit()
-            conn.close()
-            code, out, err = run_cli(["--db", db, "verify"], cwd=tmpdir)
-            assert code == 0 and "valid" in out, (old, new, out, err)
 
 
 # ----------- CLI: numbers JSON cannot spell exactly use the same code and message
@@ -453,8 +391,8 @@ def test_cli_refuses_nan_infinity_overflow_and_negative_zero_as_non_exact(
 # ----------- docs: duplicate keys at the gate, and the common-breakage guide
 
 
-def test_readme_documents_gate_duplicate_keys_and_the_common_breakages():
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+def test_reference_documents_gate_duplicate_keys_and_the_common_breakages():
+    readme = (ROOT / "docs" / "REFERENCE.md").read_text(encoding="utf-8")
     assert "parse_canonical" in readme and "DUPLICATE_JSON_KEY" in readme
     start = readme.index("### Common cases that now break, and how to fix them")
     section = readme[start : readme.index("\n## ", start)]
@@ -465,9 +403,11 @@ def test_readme_documents_gate_duplicate_keys_and_the_common_breakages():
         "metadata",
     ):
         assert needle in section, needle
-    unreleased = _latest_changelog_section()
-    assert "parse_canonical" in unreleased
-    assert "Common cases that now break" in unreleased
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    start = changelog.index("## [0.5.4]")
+    release_notes = changelog[start : changelog.index("\n## [", start + 1)]
+    assert "parse_canonical" in release_notes
+    assert "Common cases that now break" in release_notes
 
 
 def test_gate_rejects_a_repeated_key():

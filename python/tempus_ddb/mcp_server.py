@@ -13,14 +13,13 @@ load_dotenv()
 
 # -- Global configuration ----------------------------------------------
 SANDBOX_DIR = os.path.realpath(os.getcwd())
-TEMPUS_MODE = os.environ.get("TEMPUS_MODE", "autonomous")
 TEMPUS_GATE_KEYFILE = os.environ.get("TEMPUS_GATE_KEYFILE", "keys.json")
 TEMPUS_ADMIN_TOOLS = os.environ.get("TEMPUS_ADMIN_TOOLS", "0") == "1"
-TEMPUS_LEGACY_TOOLS = os.environ.get("TEMPUS_LEGACY_TOOLS", "0") == "1"
 TEMPUS_DESTRUCTIVE_TOOLS = os.environ.get("TEMPUS_DESTRUCTIVE_TOOLS", "0") == "1"
-# Development-only compatibility tools that receive private-key file paths from
-# the MCP client. Production agents must sign locally and use the signed tools.
-TEMPUS_LOCAL_KEYFILE_TOOLS = os.environ.get("TEMPUS_LOCAL_KEYFILE_TOOLS", "0") == "1"
+# The MCP process never receives a private-key path from a client: agents and
+# executors sign locally and call the *_signed tools. Older flags that re-enabled
+# key-file tools (TEMPUS_LOCAL_KEYFILE_TOOLS) or the pre-protocol decision ledger
+# (TEMPUS_LEGACY_TOOLS) were removed in 0.6.0 and are ignored.
 
 ADMIN_TOOL_NAMES = {
     "tempus_init",
@@ -28,19 +27,7 @@ ADMIN_TOOL_NAMES = {
     "tempus_register_agent",
     "tempus_whoami",
 }
-LEGACY_TOOL_NAMES = {
-    "tempus_record",
-    "tempus_record_decision",
-    "tempus_validate",
-    "tempus_list",
-    "tempus_export",
-    "tempus_count",
-}
 DESTRUCTIVE_TOOL_NAMES = {"tempus_cleanup"}
-LOCAL_KEYFILE_TOOL_NAMES = {
-    "tempus_request_action",
-    "tempus_commit_outcome",
-}
 
 
 # -- Path-traversal guard ----------------------------------------------
@@ -183,66 +170,6 @@ async def list_tools() -> list[Tool]:
             },
         ),
     ]
-    if TEMPUS_LOCAL_KEYFILE_TOOLS:
-        tools.extend(
-            [
-                Tool(
-                    name="tempus_request_action",
-                    description="Development-only: sign an intent from a local agent key file and request a permit.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "db": {
-                                "type": "string",
-                                "description": "Tempus database path",
-                            },
-                            "intent": {
-                                "type": "string",
-                                "description": "tempus.action-intent.v1 JSON",
-                            },
-                            "agent_keyfile": {
-                                "type": "string",
-                                "description": "Requesting agent key file",
-                            },
-                            "ttl_seconds": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 86400,
-                            },
-                        },
-                        "required": ["db", "intent", "agent_keyfile"],
-                    },
-                ),
-                Tool(
-                    name="tempus_commit_outcome",
-                    description="Development-only: sign an executor outcome from a local key file and append it.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "db": {
-                                "type": "string",
-                                "description": "Tempus database path",
-                            },
-                            "authorization_id": {"type": "string"},
-                            "outcome": {
-                                "type": "string",
-                                "description": "tempus.action-outcome.v1 JSON",
-                            },
-                            "executor_keyfile": {
-                                "type": "string",
-                                "description": "Executor key file",
-                            },
-                        },
-                        "required": [
-                            "db",
-                            "authorization_id",
-                            "outcome",
-                            "executor_keyfile",
-                        ],
-                    },
-                ),
-            ]
-        )
     if TEMPUS_ADMIN_TOOLS:
         tools.extend(
             [
@@ -320,49 +247,6 @@ async def list_tools() -> list[Tool]:
                 ),
             ]
         )
-    if TEMPUS_LEGACY_TOOLS:
-        for name, description in [
-            ("tempus_record_decision", "Legacy direct decision recorder."),
-            ("tempus_record", "Legacy alias for direct decision recording."),
-        ]:
-            tools.append(
-                Tool(
-                    name=name,
-                    description=description,
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "db": {"type": "string"},
-                            "payload": {"type": "string"},
-                            "rules": {"type": "string"},
-                            "keyfile": {"type": "string"},
-                            "genesis": {"type": "boolean"},
-                        },
-                        "required": ["db", "payload", "rules", "keyfile"],
-                    },
-                )
-            )
-        for name, description in [
-            ("tempus_validate", "Validate the legacy decision chain."),
-            ("tempus_list", "List legacy decisions."),
-            ("tempus_export", "Export legacy decisions."),
-            ("tempus_count", "Count legacy decisions."),
-        ]:
-            tools.append(
-                Tool(
-                    name=name,
-                    description=description,
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "db": {"type": "string"},
-                            "limit": {"type": "integer"},
-                            "offset": {"type": "integer"},
-                        },
-                        "required": ["db"],
-                    },
-                )
-            )
     if TEMPUS_DESTRUCTIVE_TOOLS:
         tools.append(
             Tool(
@@ -372,34 +256,6 @@ async def list_tools() -> list[Tool]:
             )
         )
     return tools
-
-
-def _handle_record(arguments: dict) -> list[TextContent]:
-    """Shared implementation for tempus_record and tempus_record_decision."""
-    payload = arguments["payload"]
-    rules = arguments["rules"]
-    validate_json_string(payload, "payload")
-    validate_json_string(rules, "rules")
-
-    db = validate_path(arguments["db"])
-    keyfile = validate_path(arguments["keyfile"])
-
-    genesis = arguments.get("genesis", False)
-
-    db_instance = TempusDDB(db, keyfile)
-    output = db_instance.record(payload, rules, genesis)
-
-    result = {
-        "status": "success",
-        "message": "Record successful.",
-        "output": json.loads(output)
-        if isinstance(output, str)
-        and (output.strip().startswith("{") or output.strip().startswith("["))
-        else output,
-    }
-    if TEMPUS_MODE == "demo":
-        result["mode"] = TEMPUS_MODE
-    return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
 
 def _gate_keyfile() -> str:
@@ -417,12 +273,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         if name in ADMIN_TOOL_NAMES and not TEMPUS_ADMIN_TOOLS:
             raise PermissionError("TEMPUS_ADMIN_TOOL_DISABLED")
-        if name in LEGACY_TOOL_NAMES and not TEMPUS_LEGACY_TOOLS:
-            raise PermissionError("TEMPUS_LEGACY_TOOL_DISABLED")
         if name in DESTRUCTIVE_TOOL_NAMES and not TEMPUS_DESTRUCTIVE_TOOLS:
             raise PermissionError("TEMPUS_DESTRUCTIVE_TOOL_DISABLED")
-        if name in LOCAL_KEYFILE_TOOL_NAMES and not TEMPUS_LOCAL_KEYFILE_TOOLS:
-            raise PermissionError("TEMPUS_LOCAL_KEYFILE_TOOL_DISABLED")
 
         if name == "tempus_request_action_signed":
             intent = arguments["intent"]
@@ -441,28 +293,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             output = _gate_db(arguments).commit_outcome_signed(
                 arguments["authorization_id"],
                 outcome,
-            )
-            return [TextContent(type="text", text=output)]
-
-        elif name == "tempus_request_action":
-            intent = arguments["intent"]
-            validate_json_string(intent, "intent")
-            agent_keyfile = validate_path(arguments["agent_keyfile"])
-            output = _gate_db(arguments).request_action(
-                intent,
-                agent_keyfile,
-                arguments.get("ttl_seconds", 60),
-            )
-            return [TextContent(type="text", text=output)]
-
-        elif name == "tempus_commit_outcome":
-            outcome = arguments["outcome"]
-            validate_json_string(outcome, "outcome")
-            executor_keyfile = validate_path(arguments["executor_keyfile"])
-            output = _gate_db(arguments).commit_outcome(
-                arguments["authorization_id"],
-                outcome,
-                executor_keyfile,
             )
             return [TextContent(type="text", text=output)]
 
@@ -520,100 +350,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                             "message": f"Keys generated at {output_file}",
                             "key_file": output_file,
                             "output": output_json,
-                        },
-                        indent=2,
-                    ),
-                )
-            ]
-
-        elif name in ("tempus_record", "tempus_record_decision"):
-            return _handle_record(arguments)
-
-        elif name == "tempus_validate":
-            db_path = validate_path(arguments.get("db", "tempus.db"))
-            db = TempusDDB(db_path, _gate_keyfile())
-            try:
-                output = db.validate()
-                out_str = str(output).lower()
-                if "invalid" in out_str or "mismatch" in out_str or "error" in out_str:
-                    raise RuntimeError(f"TEMPUS_LEDGER_INTEGRITY_FAILURE: {output}")
-            except Exception as e:
-                if "TEMPUS_LEDGER_INTEGRITY_FAILURE" not in str(e):
-                    raise RuntimeError(f"TEMPUS_LEDGER_INTEGRITY_FAILURE: {e!s}")
-                raise
-
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "status": "success",
-                            "message": "Validation query completed.",
-                            "db_path": db_path,
-                            "result": output,
-                        },
-                        indent=2,
-                    ),
-                )
-            ]
-
-        elif name == "tempus_list":
-            db_path = validate_path(arguments.get("db", "tempus.db"))
-            limit = arguments.get("limit", 10)
-            offset = arguments.get("offset", 0)
-            db = TempusDDB(db_path, _gate_keyfile())
-            output = db.list(limit=limit, offset=offset)
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "status": "success",
-                            "message": f"Listed {limit} decisions (offset {offset}).",
-                            "db_path": db_path,
-                            "decisions": json.loads(output)
-                            if isinstance(output, str)
-                            else output,
-                        },
-                        indent=2,
-                    ),
-                )
-            ]
-
-        elif name == "tempus_export":
-            db_path = validate_path(arguments.get("db", "tempus.db"))
-            db = TempusDDB(db_path, _gate_keyfile())
-            output = db.export()
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "status": "success",
-                            "message": "Ledger exported successfully.",
-                            "db_path": db_path,
-                            "decisions": json.loads(output)
-                            if isinstance(output, str)
-                            else output,
-                        },
-                        indent=2,
-                    ),
-                )
-            ]
-
-        elif name == "tempus_count":
-            db_path = validate_path(arguments.get("db", "tempus.db"))
-            db = TempusDDB(db_path, _gate_keyfile())
-            count = db.count()
-            return [
-                TextContent(
-                    type="text",
-                    text=json.dumps(
-                        {
-                            "status": "success",
-                            "message": f"Total decisions: {count}",
-                            "db_path": db_path,
-                            "total_decisions": count,
                         },
                         indent=2,
                     ),

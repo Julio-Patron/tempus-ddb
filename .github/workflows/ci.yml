@@ -52,6 +52,38 @@ jobs:
           RUST_BACKTRACE: 1
         run: cargo test --all-targets --verbose -- --nocapture
 
+  wasm-verifier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        run: |
+          rustup show active-toolchain
+          rustup target add wasm32-unknown-unknown
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      # The CLI version must match the wasm-bindgen crate pinned in Cargo.lock;
+      # the build script checks and fails early otherwise.
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --version 0.2.126 --locked
+
+      - name: Build the browser verifier
+        run: bash scripts/build_wasm_verifier.sh
+
+      - name: Run the verifier against the conformance fixtures
+        run: node scripts/test_wasm_verifier.mjs
+
+      - name: Validate the site
+        run: node scripts/validate_site.mjs
+
   python:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -101,8 +133,17 @@ jobs:
         shell: bash
         run: |
           python -m uv --quiet export --frozen --extra dev --no-emit-project --no-header --no-annotate --prune pip-audit -o requirements-audit.txt
+          # filelock's fix for CVE-2026-112909 / CVE-2026-112910 (4.2.1) requires Python
+          # 3.11; no release that supports 3.10 contains it. filelock is development
+          # tooling pulled in by pip-audit, never part of the published wheel, so on 3.10
+          # those two advisories are acknowledged rather than fixable. Drop this when
+          # 3.10 leaves the matrix.
+          IGNORE=()
+          if python -c 'import sys; sys.exit(0 if sys.version_info < (3, 11) else 1)'; then
+            IGNORE=(--ignore-vuln CVE-2026-112909 --ignore-vuln CVE-2026-112910)
+          fi
           # `python/` is a project directory, so pass the interpreter path explicitly.
-          python -m uv tool run --python "$(python -c 'import sys; print(sys.executable)')" pip-audit --disable-pip -r requirements-audit.txt
+          python -m uv tool run --python "$(python -c 'import sys; print(sys.executable)')" pip-audit --disable-pip "${IGNORE[@]}" -r requirements-audit.txt
           python -c "import pathlib; pathlib.Path('requirements-audit.txt').unlink(missing_ok=True)"
 
       - name: Run Ruff
@@ -110,7 +151,7 @@ jobs:
 
       - name: Validate SPDX SBOM generation
         run: |
-          python scripts/generate_sbom.py --version 0.5.4-ci --output artifacts/tempus-ddb.spdx.json
+          python scripts/generate_sbom.py --version 0.6.0-ci --output artifacts/tempus-ddb.spdx.json
           python -c "import json; d=json.load(open('artifacts/tempus-ddb.spdx.json', encoding='utf-8')); assert d['spdxVersion']=='SPDX-2.3' and d['packages']"
 
       - name: Run Python tests
@@ -124,6 +165,4 @@ jobs:
 
       - name: Smoke test examples
         run: |
-          python examples/basic_record.py
-          python examples/verify_chain.py
           python examples/full_agent_flow.py

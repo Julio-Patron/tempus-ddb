@@ -33,6 +33,7 @@ Use the CLI or a separately controlled process with `TEMPUS_ADMIN_TOOLS=1`.
 - `tempus_get_trace`, `tempus_verify_trace`, and `tempus_list_agents`: read-only
   evidence operations.
 
-The legacy `record`, `validate`, and cleanup tools remain available only with their
-explicit environment flags. Local keyfile B2A tools also require
-`TEMPUS_LOCAL_KEYFILE_TOOLS=1` and are for development compatibility only.
+Provisioning tools (`tempus_init`, `tempus_gen_keys`, `tempus_register_agent`) need
+`TEMPUS_ADMIN_TOOLS=1`; the demo cleanup tool needs `TEMPUS_DESTRUCTIVE_TOOLS=1`. There
+is no tool that takes a private-key path: since 0.6.0 the MCP process only ever sees
+signed intents and signed outcomes.

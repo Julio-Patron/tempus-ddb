@@ -101,10 +101,11 @@ The default MCP process exposes only authorization, outcome commit, trace verifi
 trace reading, and registry reading. Separate environment flags are required for:
 
 - `TEMPUS_ADMIN_TOOLS=1`: deployment-time provisioning.
-- `TEMPUS_LEGACY_TOOLS=1`: voluntary pre-B2A ledger methods.
 - `TEMPUS_DESTRUCTIVE_TOOLS=1`: demo cleanup.
-- `TEMPUS_LOCAL_KEYFILE_TOOLS=1`: development-only B2A tools that accept agent or
-  executor keyfile paths.
+
+No MCP tool accepts a private-key path from the client. The former
+`TEMPUS_LEGACY_TOOLS` (pre-protocol ledger) and `TEMPUS_LOCAL_KEYFILE_TOOLS` (key-file
+request/commit tools) were removed in 0.6.0 and are ignored if set.
 
 The gate key path is server-controlled through `TEMPUS_GATE_KEYFILE`; an MCP client
 cannot select a different gate key per authorization request. The default B2A MCP tools
@@ -126,7 +127,7 @@ accept locally signed intent and outcome payloads, not private-key file paths.
 | Database rollback | Signatures preserve integrity of the restored snapshot | A valid older snapshot is not distinguishable locally. External monotonic checkpoints are required. |
 | Malicious or altered policy | Gate-controlled policy bundles are signed and embedded by digest; evidence is reproduced by the executor | A compromised delegation root can install a malicious policy. Separate provisioning authority and monitor policy events. |
 | Key file theft | Plaintext files are development-only; gate and executor accept a Vault Transit signer config with no private key | Vault workload authentication and policy remain operator responsibilities. |
-| MCP path misuse | Default MCP tools accept only signed payloads; local keyfile tools are disabled | Development users can opt into `TEMPUS_LOCAL_KEYFILE_TOOLS=1` inside the configured sandbox. Production transports must keep this flag disabled. |
+| MCP path misuse | MCP tools accept only signed payloads; no tool takes a key-file path | Admin and destructive tools stay behind their flags and run in a separate process from the agent-facing server. |
 | Sensitive payload disclosure | None | Store digests or encrypted evidence where raw inputs/outputs contain secrets or personal data. |
 | Financial abuse | Money uses the same signed envelope | Tempus does not provide custody, KYC/AML, sanctions controls, or transaction reversal. Financial executors must supply those controls. |
 
@@ -160,7 +161,7 @@ a separately protected provisioning process. Gate 5 remains Phase 4 work.
 6. Policies are signed, versioned, deterministic, and controlled by the gate rather than
    by the requesting agent.
 7. Concurrency, recovery, denial-of-service, and cross-process replay tests pass.
-8. The agent-facing process cannot enable admin, legacy, or destructive MCP tools.
+8. The agent-facing process cannot enable admin or destructive MCP tools.
 9. Confidentiality and retention controls match the data carried in action evidence.
 
 ## Out of scope for the current vertical slice

@@ -1,6 +1,6 @@
 [package]
 name = "tempus-ddb"
-version = "0.5.4"
+version = "0.6.0"
 description = "Fail-closed policy gate for AI agent actions: signed policies, single-use permits, receipts"
 license = "MIT"
 repository = "https://github.com/Julio-Patron/tempus-ddb"
@@ -23,19 +23,21 @@ serde_json = "1.0"
 sha2 = "0.11"
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 hex = "0.4"
+
+# The gate (SQLite, signing keys, Python bindings, dev CLI). None of this is in the
+# browser verifier, which is the wasm32 build of the same crate.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 clap = { version = "4.4", features = ["derive"] }
 rand_core = { version = "0.6", features = ["std"] }
 rand = "0.8"
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py310"] }
 r2d2 = "0.8"
 r2d2_sqlite = { version = "0.24", features = ["bundled"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 
-
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2.89"
+js-sys = "0.3"
 
 [dev-dependencies]
 tempfile = "3.8"

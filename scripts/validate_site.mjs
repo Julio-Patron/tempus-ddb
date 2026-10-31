@@ -5,7 +5,7 @@ import { verifyDemoTrace } from "../site/assets/trace-verifier.mjs";
 
 const projectRoot = resolve(import.meta.dirname, "..");
 const siteRoot = resolve(projectRoot, "site");
-const requiredPages = ["index.html", "docs.html", "trace.html", "404.html"];
+const requiredPages = ["index.html", "docs.html", "verify.html", "trace.html", "404.html"];
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -66,7 +66,22 @@ for (const page of requiredPages) {
 }
 
 const assets = await readdir(resolve(siteRoot, "assets"));
-for (const asset of ["site.css", "site.mjs", "trace-verifier.mjs", "trace-page.mjs"]) assert(assets.includes(asset), `Missing shared asset ${asset}`);
+for (const asset of ["site.css", "site.mjs", "trace-verifier.mjs", "trace-page.mjs", "verify-page.mjs"]) assert(assets.includes(asset), `Missing shared asset ${asset}`);
+for (const asset of ["tempus_verifier.js", "tempus_verifier_bg.wasm"]) {
+  assert(await exists(resolve(siteRoot, "assets", "wasm", asset)), `Missing browser verifier asset assets/wasm/${asset} (run scripts/build_wasm_verifier.sh)`);
+}
+for (const sample of ["bundle.json", "bundle_tampered_decision.json", "gate_public_key.txt"]) {
+  assert(await exists(resolve(siteRoot, "data", "evidence", sample)), `Missing verifier sample data/evidence/${sample} (run scripts/generate_conformance_evidence.py)`);
+}
+for (const page of requiredPages) {
+  const html = await readFile(resolve(siteRoot, page), "utf8");
+  assert(html.includes('href="verify.html"'), `${page} must link to the browser verifier`);
+}
+const verifyPage = await readFile(resolve(siteRoot, "verify.html"), "utf8");
+for (const needle of ['id="gate-key"', 'id="evidence-file"', 'src="assets/verify-page.mjs"', "Nothing leaves this page"]) {
+  assert(verifyPage.includes(needle), `verify.html must contain ${needle}`);
+}
+assert(!/https?:\/\/(?!julio-patron\.github\.io|github\.com|pypi\.org|crates\.io|docs\.rs)/.test(verifyPage), "verify.html must not reference third-party hosts");
 
 const readme = await readFile(resolve(projectRoot, "README.md"), "utf8");
 assert(!readme.includes("Install the published beta from PyPI"), "README must not present PyPI as the beta installation source");

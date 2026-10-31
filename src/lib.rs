@@ -14,8 +14,12 @@
 //! - [`verify_receipt`], [`verify_bundle`] and [`verify_checkpoint`]: independent
 //!   verification of exported evidence against a pinned gate public key, with no database.
 //! - [`generate_keypair`]: Ed25519 key generation in the key-file format the CLI reads.
-//! - [`StorageLayer`] and [`SqliteStorage`]: the storage boundary used
-//!   by the gate and the legacy decision ledger.
+//! - [`SqliteStorage`]: the gate itself (identities, signed policies, permits, receipts,
+//!   event stream and checkpoints) on SQLite.
+//!
+//! On `wasm32` the crate compiles only the verifier and exposes it to JavaScript
+//! (`verify_bundle`, `verify_receipt`, `verify_checkpoint`, `bundle_digest`); that build
+//! is the public browser verifier at <https://julio-patron.github.io/tempus-ddb/verify.html>.
 //!
 //! Signed JSON documents are parsed strictly: duplicate object keys are refused, and
 //! numbers must be exact (no floats, no integers beyond `i64`/`u64`).
@@ -30,138 +34,25 @@ use pyo3::exceptions::{PyPermissionError, PyRuntimeError};
 #[cfg(not(target_arch = "wasm32"))]
 use pyo3::prelude::*;
 
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::prelude::*;
-
-#[cfg(not(target_arch = "wasm32"))]
 mod b2a;
-
-#[cfg(not(target_arch = "wasm32"))]
+mod events;
+mod phase3;
 mod strict_json;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod phase3;
-#[cfg(not(target_arch = "wasm32"))]
 use phase3::SignerBackend;
-
-#[cfg(not(target_arch = "wasm32"))]
-mod events;
-
-// --- 1. PATRÓN STORAGE LAYER (TRAIT) ---
-pub trait StorageLayer {
-    fn insert_decision(&mut self, payload: &str, rules: &str, genesis: bool) -> Result<(), String>;
-    fn insert_decision_batch(
-        &mut self,
-        decisions: Vec<(&str, &str)>,
-        genesis: bool,
-    ) -> Result<(), String>;
-    fn get_latest_hash(&self) -> Result<String, String>;
-    fn export_ledger(&self) -> Result<String, String>;
-    fn list_decisions(&self, limit: u32, offset: u32) -> Result<String, String>;
-    fn count_decisions(&self) -> Result<u64, String>;
-}
-
-// Experimental WASM support: in-memory stub storage only, not persistent ledger storage.
-#[cfg(target_arch = "wasm32")]
-pub struct MemoryStorage {
-    records: Vec<String>,
-    latest_hash: String,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl MemoryStorage {
-    pub fn new() -> Self {
-        Self {
-            records: Vec::new(),
-            latest_hash: "GENESIS_HASH_MEM".to_string(),
-        }
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-impl StorageLayer for MemoryStorage {
-    fn insert_decision(
-        &mut self,
-        payload: &str,
-        _rules: &str,
-        genesis: bool,
-    ) -> Result<(), String> {
-        self.records.push(payload.to_string());
-        if genesis {
-            self.latest_hash = "GENESIS_HASH_MEM".to_string();
-        } else {
-            self.latest_hash = "NEW_HASH_MEM".to_string(); // Simulación de nuevo hash
-        }
-        Ok(())
-    }
-
-    fn insert_decision_batch(
-        &mut self,
-        decisions: Vec<(&str, &str)>,
-        genesis: bool,
-    ) -> Result<(), String> {
-        let mut is_first = true;
-        for (payload, rules) in decisions {
-            self.insert_decision(payload, rules, genesis && is_first)?;
-            is_first = false;
-        }
-        Ok(())
-    }
-
-    fn get_latest_hash(&self) -> Result<String, String> {
-        Ok(self.latest_hash.clone())
-    }
-
-    fn export_ledger(&self) -> Result<String, String> {
-        // En una implementación real, serializaríamos a JSON usando serde_json
-        Ok(format!("[{}]", self.records.join(",")))
-    }
-
-    fn list_decisions(&self, limit: u32, offset: u32) -> Result<String, String> {
-        let start = offset as usize;
-        let end = std::cmp::min(start + limit as usize, self.records.len());
-        if start >= self.records.len() {
-            return Ok("[]".to_string());
-        }
-        Ok(format!("[{}]", self.records[start..end].join(",")))
-    }
-
-    fn count_decisions(&self) -> Result<u64, String> {
-        Ok(self.records.len() as u64)
-    }
-}
 
 // Implementación SQLite (Para Python / Nativo)
 #[cfg(not(target_arch = "wasm32"))]
 use rusqlite::Connection;
 
 #[cfg(not(target_arch = "wasm32"))]
-use serde::{Deserialize, Serialize};
-
-#[cfg(not(target_arch = "wasm32"))]
-use sha2::{Digest, Sha256};
-
-#[cfg(not(target_arch = "wasm32"))]
-use ed25519_dalek::Signer;
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Decision {
-    id: String,
-    parent_id: String,
-    causal_depth: u64,
-    actor_id: String,
-    timestamp: u64,
-    payload: String,
-    rules_evaluated: String,
-    signature: String,
-}
+use serde::Serialize;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub struct SqliteStorage {
     conn: Connection,
     keyfile: String,
-    cached_signing_key: std::cell::RefCell<Option<ed25519_dalek::SigningKey>>,
     cached_signer: std::cell::RefCell<Option<phase3::ConfiguredSigner>>,
 }
 
@@ -178,74 +69,13 @@ impl SqliteStorage {
         )
         .map_err(|e| e.to_string())?;
 
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS decisions (
-                id TEXT PRIMARY KEY,
-                parent_id TEXT NOT NULL,
-                causal_depth INTEGER NOT NULL,
-                actor_id TEXT NOT NULL,
-                timestamp INTEGER NOT NULL,
-                payload TEXT NOT NULL,
-                rules_evaluated TEXT NOT NULL,
-                signature TEXT NOT NULL
-            );",
-            [],
-        )
-        .map_err(|e| format!("Failed to create decisions table: {}", e))?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_parent_id ON decisions (parent_id);",
-            [],
-        )
-        .map_err(|e| format!("Failed to create parent index: {}", e))?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_causal_depth ON decisions (causal_depth);",
-            [],
-        )
-        .map_err(|e| format!("Failed to create causal depth index: {}", e))?;
-
         b2a::initialize_schema(&conn)?;
 
         Ok(Self {
             conn,
             keyfile,
-            cached_signing_key: std::cell::RefCell::new(None),
             cached_signer: std::cell::RefCell::new(None),
         })
-    }
-
-    /// Load an Ed25519 signing key from a file path.
-    fn load_signing_key_from_path(keyfile: &str) -> Result<ed25519_dalek::SigningKey, String> {
-        #[derive(Deserialize)]
-        struct KeyPairConfig {
-            #[allow(dead_code)]
-            public_key: String,
-            private_key: String,
-        }
-
-        let content = std::fs::read_to_string(keyfile)
-            .map_err(|e| format!("Failed to read key file '{}': {}", keyfile, e))?;
-        let config: KeyPairConfig = serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse key file JSON: {}", e))?;
-
-        let private_key_bytes = hex::decode(&config.private_key)
-            .map_err(|e| format!("Invalid private key hex: {}", e))?;
-        let private_key_array: [u8; 32] = private_key_bytes
-            .try_into()
-            .map_err(|_| "Private key must be exactly 32 bytes".to_string())?;
-
-        Ok(ed25519_dalek::SigningKey::from_bytes(&private_key_array))
-    }
-
-    /// Return the signing key, loading from disk on first use and caching.
-    pub(crate) fn load_signing_key(&self) -> Result<ed25519_dalek::SigningKey, String> {
-        if let Some(ref key) = *self.cached_signing_key.borrow() {
-            return Ok(key.clone());
-        }
-        let key = Self::load_signing_key_from_path(&self.keyfile)?;
-        *self.cached_signing_key.borrow_mut() = Some(key.clone());
-        Ok(key)
     }
 
     /// Load the configured signing backend. Local key files remain compatible, while
@@ -257,295 +87,6 @@ impl SqliteStorage {
         let signer = phase3::ConfiguredSigner::from_path(&self.keyfile)?;
         *self.cached_signer.borrow_mut() = Some(signer.clone());
         Ok(signer)
-    }
-
-    /// Compute the canonical SHA-256 hash for a decision (matches main.rs logic).
-    pub fn calculate_canonical_hash(
-        parent_id: &str,
-        actor_id: &str,
-        timestamp: u64,
-        payload: &str,
-        rules_evaluated: &str,
-    ) -> Result<[u8; 32], String> {
-        #[derive(Serialize)]
-        struct CanonicalPayload<'a> {
-            parent_id: &'a str,
-            actor_id: &'a str,
-            timestamp: u64,
-            payload: serde_json::Value,
-            rules_evaluated: serde_json::Value,
-        }
-
-        let payload_val: serde_json::Value =
-            serde_json::from_str(payload).map_err(|e| format!("Invalid payload JSON: {}", e))?;
-        let rules_val: serde_json::Value = serde_json::from_str(rules_evaluated)
-            .map_err(|e| format!("Invalid rules JSON: {}", e))?;
-
-        let canonical = CanonicalPayload {
-            parent_id,
-            actor_id,
-            timestamp,
-            payload: payload_val,
-            rules_evaluated: rules_val,
-        };
-
-        let canonical_bytes = serde_json::to_vec(&canonical).unwrap();
-
-        let mut hasher = Sha256::new();
-        hasher.update(&canonical_bytes);
-        Ok(hasher.finalize().into())
-    }
-
-    fn get_last_decision_conn(conn: &rusqlite::Connection) -> Result<Option<Decision>, String> {
-        let mut stmt = conn.prepare(
-            "SELECT id, parent_id, causal_depth, actor_id, timestamp, payload, rules_evaluated, signature
-             FROM decisions
-             ORDER BY causal_depth DESC, timestamp DESC
-             LIMIT 1"
-        ).map_err(|e| format!("Failed to prepare select statement: {}", e))?;
-
-        let mut rows = stmt
-            .query([])
-            .map_err(|e| format!("Failed to query database: {}", e))?;
-        if let Some(row) = rows
-            .next()
-            .map_err(|e| format!("Error advancing row: {}", e))?
-        {
-            Ok(Some(Decision {
-                id: row.get(0).map_err(|e| e.to_string())?,
-                parent_id: row.get(1).map_err(|e| e.to_string())?,
-                causal_depth: row.get(2).map_err(|e| e.to_string())?,
-                actor_id: row.get(3).map_err(|e| e.to_string())?,
-                timestamp: row.get(4).map_err(|e| e.to_string())?,
-                payload: row.get(5).map_err(|e| e.to_string())?,
-                rules_evaluated: row.get(6).map_err(|e| e.to_string())?,
-                signature: row.get(7).map_err(|e| e.to_string())?,
-            }))
-        } else {
-            Ok(None)
-        }
-    }
-
-    #[allow(dead_code)]
-    fn get_last_decision(&self) -> Result<Option<Decision>, String> {
-        Self::get_last_decision_conn(&self.conn)
-    }
-
-    pub fn validate_ledger(&self) -> Result<String, String> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, parent_id, causal_depth, actor_id, timestamp, payload, rules_evaluated, signature
-             FROM decisions
-             ORDER BY causal_depth ASC, timestamp ASC"
-        ).map_err(|e| format!("Failed to prepare select statement: {}", e))?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(Decision {
-                    id: row.get(0)?,
-                    parent_id: row.get(1)?,
-                    causal_depth: row.get(2)?,
-                    actor_id: row.get(3)?,
-                    timestamp: row.get(4)?,
-                    payload: row.get(5)?,
-                    rules_evaluated: row.get(6)?,
-                    signature: row.get(7)?,
-                })
-            })
-            .map_err(|e| format!("Failed to execute query: {}", e))?;
-
-        let mut decisions = Vec::new();
-        for r in rows {
-            match r {
-                Ok(d) => decisions.push(d),
-                Err(e) => return Err(format!("Error reading record: {}", e)),
-            }
-        }
-
-        if decisions.is_empty() {
-            return Ok(serde_json::to_string(&serde_json::json!({
-                "status": "valid",
-                "message": "Database is empty.",
-                "total_records": 0
-            }))
-            .unwrap());
-        }
-
-        use std::collections::HashMap;
-        let mut decision_map = HashMap::new();
-        let mut genesis_count = 0;
-        for d in &decisions {
-            decision_map.insert(d.id.clone(), d.clone());
-            if d.parent_id == "genesis" {
-                genesis_count += 1;
-            }
-        }
-
-        let mut errors = Vec::new();
-
-        if !decisions.is_empty() && genesis_count == 0 {
-            errors.push("No genesis decision found in the ledger.".to_string());
-        } else if genesis_count > 1 {
-            errors.push(format!(
-                "Multiple genesis decisions found ({}). Only one is allowed.",
-                genesis_count
-            ));
-        }
-
-        for d in &decisions {
-            let computed_hash = match Self::calculate_canonical_hash(
-                &d.parent_id,
-                &d.actor_id,
-                d.timestamp,
-                &d.payload,
-                &d.rules_evaluated,
-            ) {
-                Ok(h) => h,
-                Err(e) => {
-                    errors.push(format!("Decision '{}' hash calculation error: {}", d.id, e));
-                    continue;
-                }
-            };
-            let computed_id = hex::encode(computed_hash);
-            if computed_id != d.id {
-                errors.push(format!(
-                    "Decision '{}' has invalid hash. Computed: '{}', Recorded: '{}'",
-                    d.id, computed_id, d.id
-                ));
-                continue;
-            }
-
-            use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-            let pub_bytes = match hex::decode(&d.actor_id) {
-                Ok(b) => b,
-                Err(e) => {
-                    errors.push(format!("Invalid actor_id: {}", e));
-                    continue;
-                }
-            };
-            let pub_array: [u8; 32] = match pub_bytes.try_into() {
-                Ok(a) => a,
-                Err(_) => {
-                    errors.push("Invalid public key size".to_string());
-                    continue;
-                }
-            };
-            let verifying_key = match VerifyingKey::from_bytes(&pub_array) {
-                Ok(k) => k,
-                Err(e) => {
-                    errors.push(format!("Invalid public key: {}", e));
-                    continue;
-                }
-            };
-
-            let sig_bytes = match hex::decode(&d.signature) {
-                Ok(b) => b,
-                Err(e) => {
-                    errors.push(format!("Invalid signature hex: {}", e));
-                    continue;
-                }
-            };
-            let sig_array: [u8; 64] = match sig_bytes.try_into() {
-                Ok(a) => a,
-                Err(_) => {
-                    errors.push("Invalid signature size".to_string());
-                    continue;
-                }
-            };
-            let signature = Signature::from_bytes(&sig_array);
-
-            let id_bytes = match hex::decode(&d.id) {
-                Ok(b) => b,
-                Err(e) => {
-                    errors.push(format!("Invalid id hex: {}", e));
-                    continue;
-                }
-            };
-
-            if let Err(e) = verifying_key.verify(&id_bytes, &signature) {
-                errors.push(format!(
-                    "Decision '{}' signature verification failed: {}",
-                    d.id, e
-                ));
-                continue;
-            }
-
-            if d.parent_id != "genesis" {
-                match decision_map.get(&d.parent_id) {
-                    Some(parent) => {
-                        if d.causal_depth != parent.causal_depth + 1 {
-                            errors.push(format!(
-                                "Decision '{}' causal depth mismatch. Expected '{}', found '{}'",
-                                d.id,
-                                parent.causal_depth + 1,
-                                d.causal_depth
-                            ));
-                        }
-                        if d.timestamp < parent.timestamp {
-                            errors.push(format!(
-                                "Decision '{}' temporal anomaly. Precedes parent '{}'",
-                                d.id, d.parent_id
-                            ));
-                        }
-                    }
-                    None => {
-                        errors.push(format!(
-                            "Decision '{}' orphan node. Parent '{}' missing",
-                            d.id, d.parent_id
-                        ));
-                    }
-                }
-            } else {
-                if d.causal_depth != 0 {
-                    errors.push(format!(
-                        "Genesis decision '{}' must have causal_depth 0",
-                        d.id
-                    ));
-                }
-            }
-        }
-
-        // Check for unregistered actors (warnings, not errors)
-        let mut warnings = Vec::new();
-        let mut unique_actors: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for d in &decisions {
-            unique_actors.insert(d.actor_id.clone());
-        }
-        for actor in &unique_actors {
-            let registered: bool = self
-                .conn
-                .prepare("SELECT 1 FROM agents WHERE public_key = ?1 LIMIT 1")
-                .and_then(|mut s| s.exists([actor]))
-                .unwrap_or(false);
-            if !registered {
-                warnings.push(format!(
-                    "Actor '{}' is not registered in the agents table.",
-                    actor
-                ));
-            }
-        }
-
-        if errors.is_empty() {
-            let mut result = serde_json::json!({
-                "status": "valid",
-                "message": "All decisions verified successfully.",
-                "total_records": decisions.len(),
-                "unique_actors": unique_actors.len()
-            });
-            if !warnings.is_empty() {
-                result["warnings"] = serde_json::json!(warnings);
-            }
-            Ok(serde_json::to_string(&result).unwrap())
-        } else {
-            let mut result = serde_json::json!({
-                "status": "invalid",
-                "errors": errors,
-                "total_records": decisions.len()
-            });
-            if !warnings.is_empty() {
-                result["warnings"] = serde_json::json!(warnings);
-            }
-            Err(serde_json::to_string(&result).unwrap())
-        }
     }
 
     /// Register an agent through a signed, immutable delegation event.
@@ -740,297 +281,6 @@ impl SqliteStorage {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl StorageLayer for SqliteStorage {
-    fn insert_decision(&mut self, payload: &str, rules: &str, genesis: bool) -> Result<(), String> {
-        // Validate payload and rules are valid JSON
-        serde_json::from_str::<serde_json::Value>(payload)
-            .map_err(|e| format!("Payload is not valid JSON: {}", e))?;
-        serde_json::from_str::<serde_json::Value>(rules)
-            .map_err(|e| format!("Rules is not valid JSON: {}", e))?;
-
-        // Load signing key from keyfile
-        let signing_key = self.load_signing_key()?;
-        let verifying_key = signing_key.verifying_key();
-        let actor_id = hex::encode(verifying_key.to_bytes());
-
-        let tx = self
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
-
-        // Resolve parent_id and causal_depth
-        let (parent_id, causal_depth) = match Self::get_last_decision_conn(&tx)? {
-            Some(last_d) => {
-                if genesis {
-                    // Even if there are existing decisions, --genesis forces a new root
-                    ("genesis".to_string(), 0u64)
-                } else {
-                    (last_d.id, last_d.causal_depth + 1)
-                }
-            }
-            None => {
-                if genesis {
-                    ("genesis".to_string(), 0u64)
-                } else {
-                    return Err(
-                        "Database is empty. Use genesis=true to record the first decision."
-                            .to_string(),
-                    );
-                }
-            }
-        };
-
-        if parent_id == "genesis" {
-            let mut stmt = tx
-                .prepare("SELECT 1 FROM decisions WHERE parent_id = 'genesis' LIMIT 1")
-                .map_err(|e| format!("Prepare error: {}", e))?;
-            let exists = stmt.exists([]).map_err(|e| format!("Query error: {}", e))?;
-            if exists {
-                return Err("A genesis decision already exists in the database.".to_string());
-            }
-        }
-
-        // Timestamp in microseconds
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .map_err(|e| format!("System time error: {}", e))?
-            .as_micros() as u64;
-
-        // Compute the deterministic SHA-256 hash
-        let hash_bytes =
-            Self::calculate_canonical_hash(&parent_id, &actor_id, timestamp, payload, rules)?;
-        let id = hex::encode(hash_bytes);
-
-        // Ed25519 signature of the hash
-        let signature_struct = signing_key.sign(&hash_bytes);
-        let signature = hex::encode(signature_struct.to_bytes());
-
-        // Insert into SQLite
-        tx.execute(
-            "INSERT INTO decisions (id, parent_id, causal_depth, actor_id, timestamp, payload, rules_evaluated, signature)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            (
-                &id,
-                &parent_id,
-                causal_depth,
-                &actor_id,
-                timestamp,
-                payload,
-                rules,
-                &signature,
-            ),
-        ).map_err(|e| format!("Failed to insert decision into SQLite: {}", e))?;
-
-        tx.commit()
-            .map_err(|e| format!("Failed to commit transaction: {}", e))?;
-
-        Ok(())
-    }
-
-    fn insert_decision_batch(
-        &mut self,
-        decisions: Vec<(&str, &str)>,
-        genesis: bool,
-    ) -> Result<(), String> {
-        if decisions.is_empty() {
-            return Ok(());
-        }
-
-        let signing_key = self.load_signing_key()?;
-        let verifying_key = signing_key.verifying_key();
-        let actor_id = hex::encode(verifying_key.to_bytes());
-
-        let tx = self
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
-
-        let mut current_parent_id;
-        let mut current_causal_depth;
-
-        match Self::get_last_decision_conn(&tx)? {
-            Some(last_d) => {
-                if genesis {
-                    current_parent_id = "genesis".to_string();
-                    current_causal_depth = 0u64;
-                } else {
-                    current_parent_id = last_d.id;
-                    current_causal_depth = last_d.causal_depth + 1;
-                }
-            }
-            None => {
-                if genesis {
-                    current_parent_id = "genesis".to_string();
-                    current_causal_depth = 0u64;
-                } else {
-                    return Err(
-                        "Database is empty. Use genesis=true to record the first decision."
-                            .to_string(),
-                    );
-                }
-            }
-        };
-
-        if current_parent_id == "genesis" {
-            let mut stmt = tx
-                .prepare("SELECT 1 FROM decisions WHERE parent_id = 'genesis' LIMIT 1")
-                .map_err(|e| format!("Prepare error: {}", e))?;
-            let exists = stmt.exists([]).map_err(|e| format!("Query error: {}", e))?;
-            if exists {
-                return Err("A genesis decision already exists in the database.".to_string());
-            }
-        }
-
-        for (payload, rules) in decisions {
-            serde_json::from_str::<serde_json::Value>(payload)
-                .map_err(|e| format!("Payload is not valid JSON: {}", e))?;
-            serde_json::from_str::<serde_json::Value>(rules)
-                .map_err(|e| format!("Rules is not valid JSON: {}", e))?;
-
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                .map_err(|e| format!("System time error: {}", e))?
-                .as_micros() as u64;
-
-            let hash_bytes = Self::calculate_canonical_hash(
-                &current_parent_id,
-                &actor_id,
-                timestamp,
-                payload,
-                rules,
-            )?;
-            let id = hex::encode(hash_bytes);
-
-            let signature_struct = signing_key.sign(&hash_bytes);
-            let signature = hex::encode(signature_struct.to_bytes());
-
-            tx.execute(
-                "INSERT INTO decisions (id, parent_id, causal_depth, actor_id, timestamp, payload, rules_evaluated, signature)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                (
-                    &id,
-                    &current_parent_id,
-                    current_causal_depth,
-                    &actor_id,
-                    timestamp,
-                    payload,
-                    rules,
-                    &signature,
-                ),
-            ).map_err(|e| format!("Failed to insert decision into SQLite: {}", e))?;
-
-            current_parent_id = id;
-            current_causal_depth += 1;
-        }
-
-        tx.commit()
-            .map_err(|e| format!("Failed to commit transaction: {}", e))?;
-
-        Ok(())
-    }
-
-    fn get_latest_hash(&self) -> Result<String, String> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id FROM decisions ORDER BY causal_depth DESC, timestamp DESC LIMIT 1")
-            .map_err(|e| format!("Failed to prepare select statement: {}", e))?;
-
-        let mut rows = stmt
-            .query([])
-            .map_err(|e| format!("Failed to query database: {}", e))?;
-        if let Some(row) = rows
-            .next()
-            .map_err(|e| format!("Error advancing row: {}", e))?
-        {
-            let id: String = row.get(0).unwrap();
-            Ok(id)
-        } else {
-            Ok("GENESIS".to_string())
-        }
-    }
-
-    fn export_ledger(&self) -> Result<String, String> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, parent_id, causal_depth, actor_id, timestamp, payload, rules_evaluated, signature
-             FROM decisions
-             ORDER BY causal_depth ASC, timestamp ASC"
-        ).map_err(|e| format!("Failed to prepare select statement: {}", e))?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(Decision {
-                    id: row.get(0)?,
-                    parent_id: row.get(1)?,
-                    causal_depth: row.get(2)?,
-                    actor_id: row.get(3)?,
-                    timestamp: row.get(4)?,
-                    payload: row.get(5)?,
-                    rules_evaluated: row.get(6)?,
-                    signature: row.get(7)?,
-                })
-            })
-            .map_err(|e| format!("Failed to execute query: {}", e))?;
-
-        let mut decisions = Vec::new();
-        for r in rows {
-            match r {
-                Ok(d) => decisions.push(d),
-                Err(e) => return Err(format!("Error reading record: {}", e)),
-            }
-        }
-
-        serde_json::to_string(&decisions)
-            .map_err(|e| format!("Failed to serialize ledger to JSON: {}", e))
-    }
-
-    fn list_decisions(&self, limit: u32, offset: u32) -> Result<String, String> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, parent_id, causal_depth, actor_id, timestamp, payload, rules_evaluated, signature
-             FROM decisions
-             ORDER BY causal_depth DESC, timestamp DESC
-             LIMIT ?1 OFFSET ?2"
-        ).map_err(|e| format!("Failed to prepare select statement: {}", e))?;
-
-        let rows = stmt
-            .query_map([limit, offset], |row| {
-                Ok(Decision {
-                    id: row.get(0)?,
-                    parent_id: row.get(1)?,
-                    causal_depth: row.get(2)?,
-                    actor_id: row.get(3)?,
-                    timestamp: row.get(4)?,
-                    payload: row.get(5)?,
-                    rules_evaluated: row.get(6)?,
-                    signature: row.get(7)?,
-                })
-            })
-            .map_err(|e| format!("Failed to execute query: {}", e))?;
-
-        let mut decisions = Vec::new();
-        for r in rows {
-            match r {
-                Ok(d) => decisions.push(d),
-                Err(e) => return Err(format!("Error reading record: {}", e)),
-            }
-        }
-
-        serde_json::to_string(&decisions)
-            .map_err(|e| format!("Failed to serialize decisions to JSON: {}", e))
-    }
-
-    fn count_decisions(&self) -> Result<u64, String> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT COUNT(*) FROM decisions")
-            .map_err(|e| format!("Failed to prepare count statement: {}", e))?;
-        let count: u64 = stmt
-            .query_row([], |row| row.get(0))
-            .map_err(|e| format!("Failed to count decisions: {}", e))?;
-        Ok(count)
-    }
-}
-// --- 3. BINDINGS PARA PYTHON (PYO3) ---
-#[cfg(not(target_arch = "wasm32"))]
 #[pyclass(unsendable)]
 pub struct TempusDDB {
     storage: SqliteStorage,
@@ -1052,70 +302,6 @@ impl TempusDDB {
         }
 
         Ok(TempusDDB { storage, keyfile })
-    }
-
-    #[allow(unused_variables)]
-    #[pyo3(signature = (payload, rules, genesis=false))]
-    fn record(&mut self, payload: &str, rules: &str, genesis: bool) -> PyResult<String> {
-        self.storage
-            .insert_decision(payload, rules, genesis)
-            .map_err(PyPermissionError::new_err)?;
-
-        let result_json = format!(
-            r#"{{"status": "success", "action": "recorded", "latest_hash": "{}"}}"#,
-            self.storage.get_latest_hash().unwrap_or_default()
-        );
-        Ok(result_json)
-    }
-
-    #[allow(unused_variables)]
-    #[pyo3(signature = (decisions, genesis=false))]
-    fn record_batch(
-        &mut self,
-        decisions: Vec<(String, String)>,
-        genesis: bool,
-    ) -> PyResult<String> {
-        let refs: Vec<(&str, &str)> = decisions
-            .iter()
-            .map(|(p, r)| (p.as_str(), r.as_str()))
-            .collect();
-        self.storage
-            .insert_decision_batch(refs, genesis)
-            .map_err(PyPermissionError::new_err)?;
-
-        let result_json = format!(
-            r#"{{"status": "success", "action": "recorded_batch", "latest_hash": "{}"}}"#,
-            self.storage.get_latest_hash().unwrap_or_default()
-        );
-        Ok(result_json)
-    }
-
-    #[pyo3(signature = ())]
-    fn validate(&self) -> PyResult<String> {
-        self.storage
-            .validate_ledger()
-            .map_err(PyRuntimeError::new_err)
-    }
-
-    #[pyo3(signature = ())]
-    fn export(&self) -> PyResult<String> {
-        self.storage
-            .export_ledger()
-            .map_err(PyRuntimeError::new_err)
-    }
-
-    #[pyo3(signature = (limit=10, offset=0))]
-    fn list(&self, limit: u32, offset: u32) -> PyResult<String> {
-        self.storage
-            .list_decisions(limit, offset)
-            .map_err(PyRuntimeError::new_err)
-    }
-
-    #[pyo3(signature = ())]
-    fn count(&self) -> PyResult<u64> {
-        self.storage
-            .count_decisions()
-            .map_err(PyRuntimeError::new_err)
     }
 
     // --- Multi-Signer: Agent management ---
@@ -1353,7 +539,6 @@ impl TempusDDB {
 
 /// Verify a standalone receipt (trace, permit or outcome JSON) with no database,
 /// against a gate public key pinned by the verifier.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn verify_receipt(
     receipt_json: &str,
     gate_public_key: &str,
@@ -1363,7 +548,6 @@ pub fn verify_receipt(
 }
 
 /// Verify an evidence bundle with no database, against a pinned gate public key.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn verify_bundle(
     bundle_json: &str,
     gate_public_key: &str,
@@ -1374,7 +558,6 @@ pub fn verify_bundle(
 
 /// Verify a checkpoint and its event stream with no database. The signer must
 /// equal `expected_public_key`, which the verifier supplies out of band.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn verify_checkpoint(
     checkpoint_json: &str,
     stream_json: &str,
@@ -1485,53 +668,106 @@ pub fn py_verify_checkpoint(
         .map_err(PyRuntimeError::new_err)
 }
 
+/// SHA-256 of the canonical bundle without `verify_url`: the digest a verify link carries.
+#[cfg(not(target_arch = "wasm32"))]
+#[pyfunction]
+#[pyo3(name = "bundle_digest")]
+#[allow(clippy::useless_conversion)]
+pub fn py_bundle_digest(bundle_json: &str) -> PyResult<String> {
+    bundle_digest(bundle_json).map_err(PyRuntimeError::new_err)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[pymodule]
 fn _tempus_ddb(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_verify_receipt, m)?)?;
     m.add_function(wrap_pyfunction!(py_verify_bundle, m)?)?;
     m.add_function(wrap_pyfunction!(py_verify_checkpoint, m)?)?;
+    m.add_function(wrap_pyfunction!(py_bundle_digest, m)?)?;
     m.add_class::<TempusDDB>()?;
     m.add_class::<TempusExecutor>()?;
     m.add_function(wrap_pyfunction!(gen_keys, m)?)?;
     Ok(())
 }
 
-// --- 4. BINDINGS PARA JAVASCRIPT (WASM-BINDGEN) ---
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-pub struct TempusDDBWasm {
-    storage: MemoryStorage,
-    keyfile: String,
+/// Digest that identifies an evidence bundle: SHA-256 of its canonical JSON without the
+/// unsigned `verify_url` field. It is what `verify_url` carries after `#bundle=`.
+pub fn bundle_digest(bundle_json: &str) -> Result<String, String> {
+    b2a::bundle_digest_of_json(bundle_json)
 }
 
+/// The verifier is what the browser build exposes: no database, no private keys, no
+/// network. Every function takes JSON text and returns the verification result as JSON
+/// text (`tempus.trace-verification.v1` or `tempus.checkpoint-verification.v1`).
 #[cfg(target_arch = "wasm32")]
-#[wasm_bindgen]
-impl TempusDDBWasm {
-    #[wasm_bindgen(constructor)]
-    pub fn new(keyfile: String) -> Result<TempusDDBWasm, JsValue> {
-        let storage = MemoryStorage::new();
-        Ok(TempusDDBWasm { storage, keyfile })
+mod wasm {
+    use wasm_bindgen::prelude::*;
+
+    fn executor_keys(executor_public_keys: &str) -> Result<Vec<String>, JsValue> {
+        let trimmed = executor_public_keys.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+        if trimmed.starts_with('[') {
+            return serde_json::from_str::<Vec<String>>(trimmed).map_err(|e| {
+                JsValue::from_str(&format!(
+                    "executor public keys must be a JSON array of strings: {e}"
+                ))
+            });
+        }
+        Ok(trimmed
+            .split([',', '\n', ' '])
+            .filter(|key| !key.is_empty())
+            .map(str::to_string)
+            .collect())
     }
 
+    /// Verify a `tempus.evidence-bundle.v1` against the pinned gate public key.
+    /// `executor_public_keys` is empty, a JSON array, or a comma-separated list.
     #[wasm_bindgen]
-    pub fn record(&mut self, payload: &str, rules: &str, genesis: bool) -> Result<String, JsValue> {
-        self.storage
-            .insert_decision(payload, rules, genesis)
-            .map_err(|e| JsValue::from_str(&e))?;
-
-        let result_json = format!(
-            r#"{{"status": "success", "action": "recorded", "latest_hash": "{}"}}"#,
-            self.storage.get_latest_hash().unwrap_or_default()
-        );
-        Ok(result_json)
-    }
-
-    #[wasm_bindgen]
-    pub fn get_ledger(&self) -> Result<String, JsValue> {
-        self.storage
-            .export_ledger()
+    pub fn verify_bundle(
+        bundle_json: &str,
+        gate_public_key: &str,
+        executor_public_keys: &str,
+    ) -> Result<String, JsValue> {
+        let executors = executor_keys(executor_public_keys)?;
+        crate::verify_bundle(bundle_json, gate_public_key, &executors)
             .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Verify a trace, permit or outcome document against the pinned gate public key.
+    #[wasm_bindgen]
+    pub fn verify_receipt(
+        receipt_json: &str,
+        gate_public_key: &str,
+        executor_public_keys: &str,
+    ) -> Result<String, JsValue> {
+        let executors = executor_keys(executor_public_keys)?;
+        crate::verify_receipt(receipt_json, gate_public_key, &executors)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Verify a checkpoint and its event stream against the pinned gate public key.
+    #[wasm_bindgen]
+    pub fn verify_checkpoint(
+        checkpoint_json: &str,
+        stream_json: &str,
+        gate_public_key: &str,
+    ) -> Result<String, JsValue> {
+        crate::verify_checkpoint(checkpoint_json, stream_json, gate_public_key)
+            .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// SHA-256 of the canonical bundle without `verify_url` (what a verify link carries).
+    #[wasm_bindgen]
+    pub fn bundle_digest(bundle_json: &str) -> Result<String, JsValue> {
+        crate::bundle_digest(bundle_json).map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Crate version, so a page can show which verifier it runs.
+    #[wasm_bindgen]
+    pub fn version() -> String {
+        env!("CARGO_PKG_VERSION").to_string()
     }
 }
 

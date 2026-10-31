@@ -8,6 +8,8 @@ on:
       - "assets/logo.png"
       - "README.md"
       - "scripts/validate_site.mjs"
+      - "scripts/test_wasm_verifier.mjs"
+      - "conformance/evidence/**"
       - ".github/workflows/pages.yml"
   pull_request:
     branches: [main]
@@ -16,6 +18,8 @@ on:
       - "assets/logo.png"
       - "README.md"
       - "scripts/validate_site.mjs"
+      - "scripts/test_wasm_verifier.mjs"
+      - "conformance/evidence/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -43,6 +47,8 @@ jobs:
           cp assets/logo.png site/assets/logo.png
       - name: Validate static site
         run: node scripts/validate_site.mjs
+      - name: Run the browser verifier against the conformance evidence
+        run: node scripts/test_wasm_verifier.mjs
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'
         with:

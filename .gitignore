@@ -35,6 +35,8 @@ tempus.db*
 .local/
 /data/
 data/
+# The static site's sample data is source, not runtime state.
+!site/data/
 
 # Rust build output
 /target/

@@ -2,7 +2,8 @@
 //! and never trusts the root of trust stored in the database being verified.
 
 use _tempus_ddb::{
-    generate_keypair, verify_bundle, verify_checkpoint, verify_receipt, SqliteStorage,
+    bundle_digest, generate_keypair, verify_bundle, verify_checkpoint, verify_receipt,
+    SqliteStorage,
 };
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -603,6 +604,8 @@ fn omitting_the_outcome_is_not_detectable_and_is_reported_as_phase_authorized() 
     w.storage.create_checkpoint("acme").unwrap();
     let mut bundle = export(&w);
     bundle["trace"]["execution"] = Value::Null;
+    // The verify link is unsigned, so whoever strips the outcome can drop it too.
+    bundle.as_object_mut().unwrap().remove("verify_url");
     let result = check_bundle(&bundle, &w.gate_id, &[]);
     assert_eq!(result["status"], "VERIFIED", "{result}");
     assert_eq!(result["checks"]["execution"], "NOT_PRESENT");
@@ -610,4 +613,79 @@ fn omitting_the_outcome_is_not_detectable_and_is_reported_as_phase_authorized() 
     assert!(result["trust"]["not_checked"]
         .to_string()
         .contains("COMPLETENESS"));
+}
+
+#[test]
+fn bundle_verify_url_names_the_bundle_digest_and_the_public_verifier() {
+    let w = world("25.00");
+    let text = w.storage.export_bundle(&w.action_id, None).unwrap();
+    let bundle = parse(&text);
+    let digest = bundle_digest(&text).unwrap();
+    assert_eq!(digest.len(), 64);
+    assert_eq!(
+        bundle["verify_url"],
+        json!(format!(
+            "https://julio-patron.github.io/tempus-ddb/verify.html#bundle={digest}"
+        ))
+    );
+    let result = check_bundle(&bundle, &w.gate_id, &[]);
+    assert_eq!(result["status"], "VERIFIED", "{result}");
+    assert_eq!(result["bundle_digest"], json!(digest));
+    assert_eq!(result["verify_url"], bundle["verify_url"]);
+
+    // Without the link the bundle is still complete evidence.
+    let mut unlinked = bundle.clone();
+    unlinked.as_object_mut().unwrap().remove("verify_url");
+    let result = check_bundle(&unlinked, &w.gate_id, &[]);
+    assert_eq!(result["status"], "VERIFIED", "{result}");
+    assert_eq!(result["bundle_digest"], json!(digest));
+    assert!(result.get("verify_url").is_none());
+}
+
+#[test]
+fn bundle_whose_content_no_longer_matches_its_verify_url_is_invalid() {
+    let w = world("25.00");
+    w.storage.create_checkpoint("acme").unwrap();
+    let mut bundle = export(&w);
+    bundle["trace"]["execution"] = Value::Null;
+    let result = check_bundle(&bundle, &w.gate_id, &[]);
+    assert_eq!(result["status"], "INVALID", "{result}");
+    assert!(result["errors"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("BUNDLE_VERIFY_URL_MISMATCH")));
+
+    let mut bundle = export(&w);
+    bundle["verify_url"] = json!("https://example.com/verify.html");
+    let result = check_bundle(&bundle, &w.gate_id, &[]);
+    assert_eq!(result["status"], "INVALID", "{result}");
+    assert!(result["errors"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("BUNDLE_VERIFY_URL_INVALID")));
+
+    let mut bundle = export(&w);
+    bundle["verify_url"] = json!(42);
+    let result = check_bundle(&bundle, &w.gate_id, &[]);
+    assert_eq!(result["status"], "INVALID", "{result}");
+}
+
+#[test]
+fn receipts_carry_a_signed_verify_url_for_their_action() {
+    let w = world("25.00");
+    let trace = parse(&w.storage.get_trace(&w.action_id).unwrap());
+    let expected = format!(
+        "https://julio-patron.github.io/tempus-ddb/verify.html#action={}",
+        w.action_id
+    );
+    assert_eq!(
+        trace["authorization"]["authorization"]["verify_url"],
+        json!(expected)
+    );
+    assert_eq!(trace["execution"]["receipt"]["verify_url"], json!(expected));
+    // The link is inside the signed body: changing it breaks the gate signature.
+    let mut forged = trace.clone();
+    forged["authorization"]["authorization"]["verify_url"] = json!("https://evil.example/v");
+    let result = parse(&verify_receipt(&forged.to_string(), &w.gate_id, &[]).unwrap());
+    assert_eq!(result["status"], "INVALID", "{result}");
 }

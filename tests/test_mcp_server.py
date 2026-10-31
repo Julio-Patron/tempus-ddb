@@ -12,9 +12,7 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_module, "SANDBOX_DIR", str(tmp_path))
     monkeypatch.setattr(mcp_module, "TEMPUS_GATE_KEYFILE", "keys.json")
     monkeypatch.setattr(mcp_module, "TEMPUS_ADMIN_TOOLS", False)
-    monkeypatch.setattr(mcp_module, "TEMPUS_LEGACY_TOOLS", False)
     monkeypatch.setattr(mcp_module, "TEMPUS_DESTRUCTIVE_TOOLS", False)
-    monkeypatch.setattr(mcp_module, "TEMPUS_LOCAL_KEYFILE_TOOLS", False)
     return tmp_path
 
 
@@ -37,15 +35,13 @@ async def test_default_tool_surface_is_b2a_and_fail_closed(sandbox):
     assert "tempus_register_agent" not in names
     assert "tempus_cleanup" not in names
 
-    response = await call_tool("tempus_record", {})
-    payload = json.loads(response[0].text)
-    assert payload["status"] == "error"
-    assert payload["error"] == "TEMPUS_LEGACY_TOOL_DISABLED"
-
-    response = await call_tool("tempus_request_action", {})
-    payload = json.loads(response[0].text)
-    assert payload["status"] == "error"
-    assert payload["error"] == "TEMPUS_LOCAL_KEYFILE_TOOL_DISABLED"
+    # Removed in 0.6.0: the legacy ledger and the key-file tools are unknown tools now,
+    # whatever the environment says.
+    for removed in ("tempus_record", "tempus_validate", "tempus_request_action"):
+        response = await call_tool(removed, {"db": "test.db"})
+        payload = json.loads(response[0].text)
+        assert payload["status"] == "error", payload
+        assert "Unknown tool" in json.dumps(payload), payload
 
 
 def test_validate_path(sandbox):
@@ -59,7 +55,6 @@ def test_validate_path(sandbox):
 @pytest.mark.asyncio
 async def test_mcp_b2a_workflow(sandbox, monkeypatch):
     monkeypatch.setattr(mcp_module, "TEMPUS_ADMIN_TOOLS", True)
-    monkeypatch.setattr(mcp_module, "TEMPUS_LOCAL_KEYFILE_TOOLS", True)
 
     for output in ["keys.json", "agent.keys.json", "executor.keys.json"]:
         response = await call_tool("tempus_gen_keys", {"output": output})
@@ -95,15 +90,12 @@ async def test_mcp_b2a_workflow(sandbox, monkeypatch):
             "input": {"version": "1.2.3"},
         }
     )
-    response = await call_tool(
-        "tempus_request_action",
-        {
-            "db": "test.db",
-            "intent": intent,
-            "agent_keyfile": "agent.keys.json",
-        },
-    )
-    authorization = json.loads(response[0].text)
+    # The agent signs locally (here with the Python API, which mirrors a local signer)
+    # and the MCP process only ever sees the signed intent.
+    permit_json = TempusDDB(
+        str(sandbox / "test.db"), str(sandbox / "keys.json")
+    ).request_action(intent, str(sandbox / "agent.keys.json"), 60)
+    authorization = json.loads(permit_json)
     assert authorization["authorization"]["decision"] == "ALLOWED"
     authorization_id = authorization["authorization"]["authorization_id"]
     action_id = authorization["authorization"]["action_id"]

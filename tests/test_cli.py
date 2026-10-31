@@ -6,17 +6,16 @@ Run with: pytest tests/test_cli.py -v  (after `pip install -e .`)
 
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 
-def run_cli(args, cwd=None):
+def run_cli(args, cwd=None, env=None):
     """Run the tempus CLI and return (returncode, stdout, stderr)."""
     cmd = [sys.executable, "-m", "tempus_ddb.cli"] + args
-    env = os.environ.copy()
+    env = {**os.environ, **(env or {})}
     source_path = str(Path(__file__).parent.parent / "python")
     if env.get("PYTHONPATH"):
         env["PYTHONPATH"] = env["PYTHONPATH"] + os.pathsep + source_path
@@ -32,13 +31,14 @@ def run_cli(args, cwd=None):
 def test_cli_version():
     code, out, _ = run_cli(["--version"])
     assert code == 0
-    assert out.strip().startswith("tempus 0.5.")
+    assert out.strip().startswith("tempus 0.6.")
 
 
 def test_cli_help():
     code, out, _ = run_cli(["--help"])
     assert code == 0
-    assert "init" in out and "record" in out and "status" in out and "verify" in out
+    assert "init" in out and "status" in out and "request-action" in out
+    assert "verify-bundle" in out and "export-bundle" in out
     assert "request-action" in out and "commit-outcome" in out and "verify-trace" in out
 
 
@@ -64,127 +64,36 @@ def test_cli_keygen_is_machine_readable_and_refuses_overwrite(tmp_path):
 def test_cli_status_before_and_after_init(tmp_path):
     code, out, _ = run_cli(["status"], cwd=tmp_path)
     assert code == 0
-    assert "not found" in out.lower() or "Keys" in out
+    assert "not found" in out.lower()
+    assert "verify.html" in out
 
     run_cli(["init"], cwd=tmp_path)
     code2, out2, _ = run_cli(["status"], cwd=tmp_path)
     assert code2 == 0
-    assert "Keys file" in out2 and "Database" in out2
+    assert "[OK] Gate key file" in out2 and "[OK] Gate database" in out2
+    assert "Registered identities: 1" in out2
+    assert "default deny" in out2
 
 
-def test_cli_record_genesis_and_verify(tmp_path):
-    run_cli(["init"], cwd=tmp_path)
-    payload = json.dumps({"action": "test_cli", "value": 123})
-    rules = json.dumps({"approved": True})
-
-    code, out, _ = run_cli(
-        ["record", "--payload", payload, "--rules", rules, "--genesis"], cwd=tmp_path
-    )
+def test_cli_status_points_at_a_self_hosted_verifier(tmp_path):
+    env_url = "https://verifier.example.com/verify.html"
+    code, out, _ = run_cli(["status"], cwd=tmp_path, env={"TEMPUS_VERIFY_URL": env_url})
     assert code == 0
-    assert "recorded successfully" in out.lower() or "success" in out.lower()
-
-    code_v, out_v, _ = run_cli(["verify"], cwd=tmp_path)
-    assert code_v == 0
-    assert "valid" in out_v.lower() or "successful" in out_v.lower()
+    assert env_url in out
 
 
-def test_cli_record_requires_payload_and_rules(tmp_path):
+def test_cli_legacy_ledger_commands_are_gone(tmp_path):
     run_cli(["init"], cwd=tmp_path)
-    code, out, err = run_cli(["record", "--payload", "{}", "--rules", ""], cwd=tmp_path)
-    combined = (out + err).lower()
-    assert code != 0
-    assert "rules" in combined or "required" in combined
-
-
-def test_cli_record_invalid_json(tmp_path):
-    run_cli(["init"], cwd=tmp_path)
-    code, out, err = run_cli(
-        ["record", "--payload", "not-json", "--rules", "{}", "--genesis"], cwd=tmp_path
-    )
-    combined = (out + err).lower()
-    assert code != 0
-    assert "json" in combined
-
-
-def test_cli_record_without_keys_fails(tmp_path):
-    code, out, err = run_cli(
-        ["record", "--payload", "{}", "--rules", "{}", "--genesis"], cwd=tmp_path
-    )
-    combined = (out + err).lower()
-    assert code != 0
-    assert "keys" in combined or "init" in combined
-
-
-def test_cli_status_after_record(tmp_path):
-    run_cli(["init"], cwd=tmp_path)
-    run_cli(
-        ["record", "--payload", '{"a":1}', "--rules", "{}", "--genesis"], cwd=tmp_path
-    )
-    code, out, _ = run_cli(["status"], cwd=tmp_path)
-    assert code == 0
-    assert "Chain integrity" in out or "VALID" in out
-
-
-def test_cli_record_multiple_and_verify(tmp_path):
-    code_init, out_init, err_init = run_cli(["init"], cwd=tmp_path)
-    assert code_init == 0, out_init + err_init
-
-    code_1, out_1, err_1 = run_cli(
-        ["record", "--payload", '{"step":1}', "--rules", "{}", "--genesis"],
-        cwd=tmp_path,
-    )
-    assert code_1 == 0, out_1 + err_1
-
-    code_2, out_2, err_2 = run_cli(
-        ["record", "--payload", '{"step":2}', "--rules", "{}"], cwd=tmp_path
-    )
-    assert code_2 == 0, out_2 + err_2
-
-    code, out, err = run_cli(["verify"], cwd=tmp_path)
-    assert code == 0, out + err
-    assert "total_records" in out or "valid" in out.lower()
-
-
-def test_cli_record_with_file_inputs(tmp_path):
-    run_cli(["init"], cwd=tmp_path)
-    pfile = tmp_path / "p.json"
-    rfile = tmp_path / "r.json"
-    pfile.write_text(json.dumps({"from": "file"}))
-    rfile.write_text(json.dumps({"ok": True}))
-
-    code, out, _ = run_cli(
-        ["record", "--payload", str(pfile), "--rules", str(rfile), "--genesis"],
-        cwd=tmp_path,
-    )
-    assert code == 0
-    assert "recorded" in out.lower()
-
-
-def test_cli_verify_reports_error_on_corrupt(tmp_path):
-    run_cli(["init"], cwd=tmp_path)
-    run_cli(["record", "--payload", "{}", "--rules", "{}", "--genesis"], cwd=tmp_path)
-    db = tmp_path / "tempus.db"
-    conn = sqlite3.connect(db)
-    try:
-        conn.execute("UPDATE decisions SET payload = ?", ('{"tampered":true}',))
-        conn.commit()
-    finally:
-        conn.close()
-
-    code, out, err = run_cli(["verify"], cwd=tmp_path)
-    combined = (out + err).lower()
-    assert (
-        code != 0
-        or "invalid" in combined
-        or "error" in combined
-        or "mismatch" in combined
-    )
-
-
-def test_cli_status_shows_helpful_next_steps(tmp_path):
-    code, out, _ = run_cli(["status"], cwd=tmp_path)
-    assert code == 0
-    assert "Next steps" in out or "init" in out.lower()
+    for command in (
+        ["record", "--payload", "{}", "--rules", "{}", "--genesis"],
+        ["verify"],
+        ["export"],
+        ["list"],
+        ["count"],
+    ):
+        code, _, err = run_cli(command, cwd=tmp_path)
+        assert code != 0, command
+        assert "invalid choice" in err, (command, err)
 
 
 def test_cli_b2a_authorization_execution_flow(tmp_path):
