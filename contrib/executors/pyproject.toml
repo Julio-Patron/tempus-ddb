@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/Julio-Patron/tempus-ddb/tree/main/contrib/executors"
+Repository = "https://github.com/tempus-protocol/tempus-ddb/tree/main/contrib/executors"
 
 [project.scripts]
 tempus-http-executor = "tempus_executors.http:main"

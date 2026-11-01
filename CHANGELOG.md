@@ -22,6 +22,10 @@ smaller and points at it.
   conformance reference for `ActionAdapter`; the GitHub product executor is
   `tempus-github-app` (Tempus Guard for GitHub), which publishes the "Verified by Tempus"
   check. CI installs and tests the contrib package from the repository.
+- The repository lives in the `tempus-protocol` GitHub organization. The default `verify_url`
+  base is now `https://tempus-protocol.github.io/tempus-ddb/verify.html` (GitHub redirects the
+  repository, not the Pages site); the conformance evidence is regenerated with it, and every
+  link in the package metadata, docs and site points at the organization.
 
 ## [Unreleased] — 0.6.0 "Evidence"
 

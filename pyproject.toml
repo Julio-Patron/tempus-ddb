@@ -52,11 +52,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://julio-patron.github.io/tempus-ddb/"
-Documentation = "https://julio-patron.github.io/tempus-ddb/docs.html"
-Repository = "https://github.com/Julio-Patron/tempus-ddb"
-Issues = "https://github.com/Julio-Patron/tempus-ddb/issues"
-Changelog = "https://github.com/Julio-Patron/tempus-ddb/releases"
+Homepage = "https://tempus-protocol.github.io/tempus-ddb/"
+Documentation = "https://tempus-protocol.github.io/tempus-ddb/docs.html"
+Repository = "https://github.com/tempus-protocol/tempus-ddb"
+Issues = "https://github.com/tempus-protocol/tempus-ddb/issues"
+Changelog = "https://github.com/tempus-protocol/tempus-ddb/releases"
 "Rust crate" = "https://crates.io/crates/tempus-ddb"
 
 [project.scripts]

@@ -33,7 +33,7 @@ quotas, telemetry) comes last, when a paying deployment needs it.
 Evidence at the front: anyone who is handed a receipt or a bundle can verify it in a
 browser, without installing anything and without trusting the gate that issued it.
 
-- Public browser verifier at <https://julio-patron.github.io/tempus-ddb/verify.html>:
+- Public browser verifier at <https://tempus-protocol.github.io/tempus-ddb/verify.html>:
   the wasm32 build of this crate, offline, pinned gate key, plain-language account of
   what the document cannot show.
 - `verify_url` in every signed permit and execution receipt (`#action=<action_id>`) and

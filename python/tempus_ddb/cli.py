@@ -23,7 +23,7 @@ from .mcp_server import main_sync
 # --- Default paths (used when global args are not provided) ---
 DEFAULT_KEYFILE = "keys.json"
 DEFAULT_DB = "tempus.db"
-DEFAULT_VERIFY_URL = "https://julio-patron.github.io/tempus-ddb/verify.html"
+DEFAULT_VERIFY_URL = "https://tempus-protocol.github.io/tempus-ddb/verify.html"
 
 
 def _verify_url_base():
@@ -1031,7 +1031,7 @@ def run_guard(args):
     except ImportError:
         print(
             "[ERROR] `tempus guard` needs the Tempus Guard CLI: pip install tempus-guard-cli "
-            "(https://github.com/Julio-Patron/Universal-Kernel-Ciel)",
+            "(https://github.com/tempus-protocol/Universal-Kernel-Ciel)",
             file=sys.stderr,
         )
         sys.exit(2)
