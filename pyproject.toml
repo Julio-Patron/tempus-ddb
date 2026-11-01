@@ -62,9 +62,8 @@ Changelog = "https://github.com/Julio-Patron/tempus-ddb/releases"
 [project.scripts]
 tempus = "tempus_ddb.cli:main"
 tempus-github-executor = "tempus_ddb.github_executor:main"
-tempus-http-executor = "tempus_ddb.http_executor:main"
-tempus-slack-executor = "tempus_ddb.slack_executor:main"
-tempus-payment-executor = "tempus_ddb.payment_executor:main"
+# tempus-http-executor, tempus-slack-executor and tempus-payment-executor are provided
+# by contrib/executors (tempus-executors-contrib), which is not part of this wheel.
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
