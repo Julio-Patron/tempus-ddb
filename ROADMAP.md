@@ -57,9 +57,9 @@ Tempus Guard for GitHub: the first installable product on the protocol.
   verifier with the bundle for the agent's action.
 - The GitHub executor (`tempus-github-app`) issues the permit-bound push with a
   short-lived token and exports the bundle the check links to.
-- The local policy firewall for coding agents (Universal-Kernel-Ciel) emits Tempus
+- The Tempus Guard CLI (`tempus guard`; repository Universal-Kernel-Ciel, to be renamed) emits Tempus
   intents and consumes permits instead of keeping its own ledger and policy language.
-- One policy evaluator (`jsonlogic-fast`) for the gate and the local firewall.
+- One policy evaluator (`jsonlogic-fast`) for the gate and the local client.
 - Dogfooding: every agent push to the project's own repositories goes through Guard.
 
 Exit criteria: an agent can open a PR only through a permit, and a reviewer can verify

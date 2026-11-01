@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased] — 0.7.0 "Guard"
+
+Tempus Guard for GitHub, the first installable product on the protocol. The core gets
+smaller and points at it.
+
+### Added
+
+- `tempus guard`: the agent's side of Guard, delegating to the Tempus Guard CLI (`tempus-guard-cli`) when
+  it is installed and explaining how to install it otherwise. `tempus guard intent` builds and
+  signs the `github.push_branch` intent for a local branch (bundle, bundle digest, changed
+  paths, `diff_sha256`); `tempus guard request` hands it to a local gate; `tempus guard hook
+  install` refuses direct pushes from the clone.
+
+### Changed
+
+- The HTTP, Slack and payment executors leave the wheel and become the unpublished
+  distribution `tempus-executors-contrib` under `contrib/executors/` (`pip install -e
+  contrib/executors`; same modules, same commands, imports rewritten to
+  `tempus_executors.*`). `tempus-ddb` ships `tempus-github-executor` alone, as the
+  conformance reference for `ActionAdapter`; the GitHub product executor is
+  `tempus-github-app` (Tempus Guard for GitHub), which publishes the "Verified by Tempus"
+  check. CI installs and tests the contrib package from the repository.
+
 ## [Unreleased] — 0.6.0 "Evidence"
 
 Evidence at the front. Anyone who is handed a Tempus receipt or bundle can now verify it

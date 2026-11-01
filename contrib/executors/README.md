@@ -26,6 +26,12 @@ This distribution (`tempus-executors-contrib`) is therefore **not published to P
 (its metadata carries the `Private :: Do Not Upload` classifier). It is installed from
 the repository and versioned with it.
 
+> **Deprecated since 0.7.0, removed in 0.9.0.** These executors are kept here through the
+> 0.8 line as working examples and will be deleted from the repository in 0.9.0, as
+> [`COMPATIBILITY.md`](../../COMPATIBILITY.md) records. Build production integrations as
+> your own `ActionAdapter` on `ExecutorRuntime`, certified with the conformance harness,
+> and use Tempus Guard for GitHub for GitHub writes.
+
 ## Install
 
 From a checkout of `tempus-ddb`, with the core installed (`pip install tempus-ddb` or

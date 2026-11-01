@@ -452,9 +452,17 @@ Additional standalone scripts in `examples/`:
 python examples/full_agent_flow.py
 ```
 
-## Packaged Mediated Executors
+## Mediated Executors
 
-Tempus includes four official, credential-isolated executors out of the box. The requesting AI agent *never* holds downstream API keys or secrets.
+The requesting AI agent *never* holds downstream API keys or secrets. Since 0.7 the wheel
+ships one executor, `tempus-github-executor`, as the conformance reference for the
+`ActionAdapter` protocol; the product executor for GitHub is
+[Tempus Guard for GitHub](https://github.com/Julio-Patron/tempus-github-app)
+(`tempus-github-app`), which adds permit-bound pushes and the "Verified by Tempus" check.
+The HTTP, Slack and payment executors live in this repository under
+[`contrib/executors/`](../contrib/executors/README.md) as the unpublished distribution
+`tempus-executors-contrib` (`pip install -e contrib/executors`); their commands and options
+are unchanged and documented below.
 
 **Where `permit.json` comes from.** It is the output of `tempus request-action` (see
 *End-to-end from the CLI*): `tempus request-action --intent intent.json --agent-keyfile
@@ -481,7 +489,7 @@ tempus-github-executor \
   --tenant-id acme
 ```
 
-### 2. HTTP & Webhook Executor (`tempus-http-executor`)
+### 2. HTTP & Webhook Executor (`tempus-http-executor`, contrib)
 Executes HTTPS POST/PUT webhooks and external API mutations while isolating authorization headers:
 - Supported actions: `http.post`, `http.put`, `webhook.send`.
 
@@ -539,7 +547,7 @@ tempus-http-executor \
 - An ambiguous transport outcome is recorded as `UNKNOWN` and is not retried.
   Classification uses the exception type. A validation failure is `FAILED`.
 
-### 3. Slack Executor (`tempus-slack-executor`)
+### 3. Slack Executor (`tempus-slack-executor`, contrib)
 Dispatches channel alerts and notifications while isolating `SLACK_BOT_TOKEN`:
 - Supported actions: `slack.post_message`, `slack.send_alert`.
 - The permit `resource` is the channel and must be **exactly one**: an ID (`C`, `G` or `D` +
@@ -558,7 +566,7 @@ tempus-slack-executor \
   --token "xoxb-<isolated-slack-bot-token>"
 ```
 
-### 4. Pluggable Financial Adapter (`tempus-payment-executor`)
+### 4. Pluggable Financial Adapter (`tempus-payment-executor`, contrib)
 Reference pluggable executor that enforces the universal `money` envelope (`amount` or `amount_minor`, `asset` or `currency`, `beneficiary`; fields that disagree are refused) and minor-unit limits with credential isolation:
 - Supported actions: `finance.disburse`, `finance.transfer`, `payment.charge`. Each one
   requires a `money` object and a non-zero amount; a missing, null, or zero amount is
@@ -591,6 +599,18 @@ tempus-payment-executor \
   cumulative, daily or velocity limits, no sanctions/KYC checks, no confirmation of the
   provider's settlement, and the shipped transport is a mock. Put the real controls
   (provider-side limits, approvals, reconciliation) at the provider.
+
+## `tempus guard`: the agent's side
+
+`tempus guard ...` is the Tempus Guard CLI ([Universal-Kernel-Ciel](https://github.com/Julio-Patron/Universal-Kernel-Ciel),
+`pip install tempus-guard-cli`) reached through the core CLI; without it installed the command says so
+and exits 2. `tempus guard intent --branch agent/fix-123 --base origin/main --tenant-id acme
+--agent-keyfile agent.keys.json` reads the local branch, writes the git bundle and prints the
+signed `github.push_branch` intent (`intent`, `agent_id`, `agent_signature`) with the bundle
+digest, the changed paths and `diff_sha256`, ready for `request_action_signed` or
+`tempus guard request --signed signed.json --gate-db gate.db --gate-keyfile gate.keys.json`.
+`tempus guard hook install` makes the clone refuse direct pushes. Options meant for `tempus-guard`
+itself go after `--` (`tempus guard -- --version`).
 
 ## Performance Benchmarks
 
